@@ -104,7 +104,26 @@ class OpenAIClient:
         if request.system_prompt:
             messages.append({"role": "system", "content": request.system_prompt})
 
-        messages.append({"role": "user", "content": request.prompt})
+        # Multimodal content if attachments are present
+        if request.attachments:
+            content_parts: list[dict] = [{"type": "text", "text": request.prompt}]
+            for block in request.attachments:
+                if block.type == "image" and block.data and block.media_type:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{block.media_type};base64,{block.data}",
+                            "detail": "auto",
+                        },
+                    })
+                elif block.type == "document" and block.text:
+                    label = f"[File: {block.filename}]" if block.filename else "[Attached file]"
+                    content_parts.append({"type": "text", "text": f"{label}\n{block.text}"})
+                elif block.type == "text" and block.text:
+                    content_parts.append({"type": "text", "text": block.text})
+            messages.append({"role": "user", "content": content_parts})
+        else:
+            messages.append({"role": "user", "content": request.prompt})
 
         # Convert tools format if provided
         tools_param = None

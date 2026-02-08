@@ -1,7 +1,7 @@
 """Shared Pydantic models for LLM requests, responses, and tools."""
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -90,12 +90,43 @@ class ToolCall(BaseModel):
         }
 
 
+class ContentBlock(BaseModel):
+    """A single content block inside a multimodal message.
+
+    Supported types:
+    - ``text``     – plain text (``text`` field required)
+    - ``image``    – base64-encoded image (``media_type`` + ``data`` required)
+    - ``document`` – text file content (``filename`` + ``text`` required)
+    """
+
+    type: Literal["text", "image", "document"] = Field(
+        ..., description="Block kind: text, image, or document"
+    )
+    text: Optional[str] = Field(
+        default=None, description="Text content (for text and document blocks)"
+    )
+    media_type: Optional[str] = Field(
+        default=None,
+        description="MIME type, e.g. image/png (for image blocks)",
+    )
+    data: Optional[str] = Field(
+        default=None, description="Base64-encoded binary data (for image blocks)"
+    )
+    filename: Optional[str] = Field(
+        default=None, description="Original filename (for document blocks)"
+    )
+
+
 class LLMRequest(BaseModel):
     """Request schema for LLM inference."""
 
     prompt: str = Field(..., description="The main user prompt")
     system_prompt: Optional[str] = Field(
         default=None, description="System message to guide LLM behavior"
+    )
+    attachments: Optional[list[ContentBlock]] = Field(
+        default=None,
+        description="Optional file attachments (images, documents) sent alongside the prompt",
     )
     model_preference: Optional[ModelTier] = Field(
         default=ModelTier.BALANCED,

@@ -91,8 +91,27 @@ class ClaudeClient:
         # Prepare system message if provided
         system = request.system_prompt or ""
 
-        # Prepare messages
-        messages = [{"role": "user", "content": request.prompt}]
+        # Prepare messages — multimodal if attachments are present
+        if request.attachments:
+            content_parts: list[dict] = [{"type": "text", "text": request.prompt}]
+            for block in request.attachments:
+                if block.type == "image" and block.data and block.media_type:
+                    content_parts.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": block.media_type,
+                            "data": block.data,
+                        },
+                    })
+                elif block.type == "document" and block.text:
+                    label = f"[File: {block.filename}]" if block.filename else "[Attached file]"
+                    content_parts.append({"type": "text", "text": f"{label}\n{block.text}"})
+                elif block.type == "text" and block.text:
+                    content_parts.append({"type": "text", "text": block.text})
+            messages = [{"role": "user", "content": content_parts}]
+        else:
+            messages = [{"role": "user", "content": request.prompt}]
 
         # Convert tools format if provided
         tools_param = None

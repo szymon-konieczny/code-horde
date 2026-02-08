@@ -819,6 +819,7 @@ class BaseAgent(ABC):
         model_override = task_payload.get("model")  # e.g. "claude-sonnet-4-20250514" or "ollama"
 
         from src.models.schemas import (
+            ContentBlock,
             LLMRequest,
             ModelTier,
             SensitivityLevel,
@@ -940,9 +941,23 @@ class BaseAgent(ABC):
             f"{_append}"
         )
 
+        # Convert raw attachment dicts from task_payload to ContentBlock objects
+        raw_attachments = task_payload.get("attachments") or []
+        content_blocks: list[ContentBlock] | None = None
+        if raw_attachments:
+            content_blocks = []
+            for att in raw_attachments:
+                try:
+                    content_blocks.append(ContentBlock(**att) if isinstance(att, dict) else att)
+                except Exception:
+                    pass  # Skip malformed attachments
+            if not content_blocks:
+                content_blocks = None
+
         llm_request = LLMRequest(
             prompt=message,
             system_prompt=system_prompt,
+            attachments=content_blocks,
             model_preference=ModelTier.FAST,
             sensitivity=SensitivityLevel.INTERNAL,
             max_tokens=2048,

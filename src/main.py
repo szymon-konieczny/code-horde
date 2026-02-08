@@ -557,9 +557,47 @@ def create_app() -> FastAPI:
         target_agent = payload.get("agent_id")
         model_override = payload.get("model")  # e.g. "claude-sonnet-4-20250514"
         conversation_id = payload.get("conversation_id")
+        raw_attachments: list[dict] = payload.get("attachments") or []
 
-        if not message:
-            raise HTTPException(status_code=400, detail="Message is required")
+        if not message and not raw_attachments:
+            raise HTTPException(status_code=400, detail="Message or attachments required")
+
+        # ── Validate and normalise attachments ────────────────────
+        _MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB per file
+        _MAX_ATTACHMENTS = 5
+        _ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+        validated_attachments: list[dict[str, Any]] = []
+        if raw_attachments:
+            if len(raw_attachments) > _MAX_ATTACHMENTS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Maximum {_MAX_ATTACHMENTS} attachments allowed",
+                )
+            for att in raw_attachments:
+                att_type = att.get("type", "")
+                if att_type == "image":
+                    media = att.get("media_type", "")
+                    data = att.get("data", "")
+                    if media not in _ALLOWED_IMAGE_TYPES:
+                        continue  # skip unsupported image types
+                    if len(data) > _MAX_ATTACHMENT_BYTES * 4 // 3:
+                        continue  # base64 is ~4/3 of raw size
+                    validated_attachments.append({
+                        "type": "image",
+                        "media_type": media,
+                        "data": data,
+                        "filename": att.get("filename", "image"),
+                    })
+                elif att_type == "document":
+                    text_content = att.get("content", "") or att.get("text", "")
+                    if len(text_content) > _MAX_ATTACHMENT_BYTES:
+                        continue
+                    validated_attachments.append({
+                        "type": "document",
+                        "text": text_content,
+                        "filename": att.get("filename", "file.txt"),
+                    })
 
         # Persist user message to conversation store
         conv_store: Optional[ConversationStore] = _app_state.get("conversation_store")
@@ -616,6 +654,8 @@ def create_app() -> FastAPI:
             project_dir = _app_state.get("project_dir", "")
             if project_dir:
                 task_payload["project_dir"] = project_dir
+            if validated_attachments:
+                task_payload["attachments"] = validated_attachments
 
             # Inject resolved URL context so the agent can reference it
             if url_context_parts:
