@@ -28,8 +28,8 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
-# Default scopes for Calendar API
-DEFAULT_SCOPES = "https://www.googleapis.com/auth/calendar"
+# Default scopes for Calendar API + email (for "Signed in as" display)
+DEFAULT_SCOPES = "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email"
 
 
 class GoogleOAuthTokenManager:

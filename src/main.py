@@ -2440,8 +2440,17 @@ def create_app() -> FastAPI:
 
         if error:
             return HTMLResponse(
-                f"<html><body><h2>Authorization failed</h2><p>{error}</p>"
-                "<p>You can close this tab.</p></body></html>",
+                "<html><head><title>Authorization Failed</title></head>"
+                "<body style='font-family:-apple-system,sans-serif;text-align:center;"
+                "padding:80px 20px;background:#0f172a;color:#e2e8f0'>"
+                "<div style='max-width:400px;margin:0 auto'>"
+                "<div style='font-size:48px;margin-bottom:16px'>&#x274C;</div>"
+                f"<h2 style='color:#f87171'>Authorization failed</h2>"
+                f"<p style='color:#94a3b8'>{error}</p>"
+                "<a href='/' style='display:inline-block;margin-top:24px;padding:10px 24px;"
+                "background:#334155;color:#e2e8f0;text-decoration:none;border-radius:8px;"
+                "font-weight:600;font-size:14px'>&larr; Back to Dashboard</a>"
+                "</div></body></html>",
                 status_code=400,
             )
         if not code:
@@ -2461,20 +2470,41 @@ def create_app() -> FastAPI:
                 client_secret=client_secret,
                 redirect_uri=redirect_uri,
             )
-            email = tokens.get("email", "unknown")
+            email = tokens.get("email") or "your Google account"
             return HTMLResponse(
-                f"<html><head><title>Google Calendar Connected</title></head>"
-                f"<body style='font-family:sans-serif;text-align:center;padding:60px'>"
-                f"<h2 style='color:#06b6d4'>Google Calendar connected!</h2>"
-                f"<p>Signed in as <strong>{email}</strong></p>"
-                f"<p style='color:#888'>You can close this tab and return to AgentArmy.</p>"
-                f"<script>setTimeout(()=>window.close(),3000)</script>"
-                f"</body></html>"
+                "<html><head><title>Google Calendar Connected</title></head>"
+                "<body style='font-family:-apple-system,sans-serif;text-align:center;"
+                "padding:80px 20px;background:#0f172a;color:#e2e8f0'>"
+                "<div style='max-width:400px;margin:0 auto'>"
+                "<div style='font-size:48px;margin-bottom:16px'>&#x2705;</div>"
+                "<h2 style='color:#06b6d4;margin-bottom:8px'>Google Calendar connected!</h2>"
+                f"<p style='color:#94a3b8'>Signed in as <strong style='color:#e2e8f0'>{email}</strong></p>"
+                "<p style='color:#64748b;font-size:14px;margin-top:24px' id='status'>Closing in 3s...</p>"
+                "<a href='/' style='display:inline-block;margin-top:16px;padding:10px 24px;"
+                "background:#06b6d4;color:#0f172a;text-decoration:none;border-radius:8px;"
+                "font-weight:600;font-size:14px'>&larr; Back to Dashboard</a>"
+                "</div>"
+                "<script>"
+                "let c=3;const s=document.getElementById('status');"
+                "const t=setInterval(()=>{c--;if(c>0){s.textContent='Closing in '+c+'s...'}"
+                "else{clearInterval(t);try{window.close()}catch(e){}"
+                "s.textContent='Click the link below to return.'}},1000);"
+                "</script>"
+                "</body></html>"
             )
         except Exception as exc:
             return HTMLResponse(
-                f"<html><body><h2>Authorization failed</h2><p>{exc}</p>"
-                "<p>You can close this tab.</p></body></html>",
+                "<html><head><title>Authorization Failed</title></head>"
+                "<body style='font-family:-apple-system,sans-serif;text-align:center;"
+                "padding:80px 20px;background:#0f172a;color:#e2e8f0'>"
+                "<div style='max-width:400px;margin:0 auto'>"
+                "<div style='font-size:48px;margin-bottom:16px'>&#x274C;</div>"
+                "<h2 style='color:#f87171'>Authorization failed</h2>"
+                f"<p style='color:#94a3b8'>{exc}</p>"
+                "<a href='/' style='display:inline-block;margin-top:24px;padding:10px 24px;"
+                "background:#334155;color:#e2e8f0;text-decoration:none;border-radius:8px;"
+                "font-weight:600;font-size:14px'>&larr; Back to Dashboard</a>"
+                "</div></body></html>",
                 status_code=500,
             )
 
