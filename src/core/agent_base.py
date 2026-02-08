@@ -884,19 +884,18 @@ class BaseAgent(ABC):
             f"You have access to a terminal/shell in the project directory. "
             f"You can execute git commands, build tools, linters, test runners, package managers, and any CLI tool.\n\n"
             f"**AUTONOMOUS EXECUTION — CRITICAL:**\n"
-            f"You are an autonomous agent. Any ```bash block you write WILL BE AUTO-EXECUTED immediately. "
-            f"You will NOT see the output — the system captures it and shows the user a collapsible result. "
-            f"Therefore:\n"
-            f"- ONLY write ```bash blocks for commands you ACTUALLY WANT TO RUN right now.\n"
-            f"- NEVER write exploratory/diagnostic commands as ```bash blocks (git status, git log, find, grep, ls, cat). "
-            f"Instead, describe what the user should know in prose.\n"
-            f"- Consolidate multi-step operations into ONE ```bash block with `&&` chaining.\n"
-            f"  - WRONG: 6 separate bash blocks (git status, git checkout, git add, git commit, git push)\n"
-            f"  - RIGHT: One block: `git checkout develop && git add -A && git commit -m 'msg' && git push`\n"
-            f"- Before the bash block, give a 1-2 sentence summary of what will happen.\n"
-            f"- After the bash block, add a brief note about expected outcome.\n"
-            f"- If the user asks to 'check' or 'show' something (git status, diff, etc.), "
-            f"describe the answer in prose — do NOT emit a bash block for read-only queries.\n\n"
+            f"You are an autonomous agent. Any ```bash block you write WILL BE AUTO-EXECUTED immediately on the server. "
+            f"You will NOT see the output — the system captures it and shows the user a collapsible result.\n\n"
+            f"**STRICT RULES — follow every time:**\n"
+            f"1. MAXIMUM ONE ```bash block per response. Chain commands with `&&`.\n"
+            f"   WRONG: multiple bash blocks (git checkout …) (git add …) (git commit …)\n"
+            f"   RIGHT: ONE block: `git checkout develop && git add -A && git commit -m 'msg' && git push`\n"
+            f"2. NEVER emit bash blocks for read-only / diagnostic commands "
+            f"(git status, git log, git diff, find, grep, ls, cat, head, tail, wc). "
+            f"Answer those from your knowledge or describe the answer in prose.\n"
+            f"3. Before the bash block, give a 1-sentence summary of what will happen.\n"
+            f"4. After the bash block, one sentence about expected outcome. Nothing more.\n"
+            f"5. If the user asks to 'check', 'show', or 'view' something, respond in prose only — NO bash block.\n\n"
             f"Integration tokens (Figma, GitHub, Jira) are injected as environment variables when commands run. "
             f"Use `$FIGMA_TOKEN`, `$GITHUB_TOKEN`, `$JIRA_API_TOKEN`, `$JIRA_EMAIL`, `$JIRA_DOMAIN` in bash blocks. "
             f"NEVER use placeholder tokens like `<YOUR_FIGMA_TOKEN>` or `<YOUR_TOKEN>` — real tokens are already available.\n"
@@ -1047,6 +1046,12 @@ class BaseAgent(ABC):
         """Extract ```bash blocks from LLM response, execute them, and
         replace with collapsible output.
 
+        Optimisations vs. the naïve version:
+        - Environment dict is built **once**, not per-block.
+        - Independent blocks run in **parallel** via ``asyncio.gather``.
+        - Timeout is scaled per-command (30s default, shorter for fast
+          git/npm commands) instead of a flat 60s.
+
         Returns the modified response text with executed results inline.
         """
         import asyncio as _aio
@@ -1057,41 +1062,53 @@ class BaseAgent(ABC):
         if not matches:
             return text
 
-        result_text = text
-        # Process in reverse so string indices stay valid
-        for match in reversed(matches):
-            command = match.group(1).strip()
+        # ── Build env ONCE ───────────────────────────────────────
+        run_env = os.environ.copy()
+        api_port = os.environ.get("AGENTARMY_PORT", "8000")
+        run_env["AGENTARMY_API_URL"] = f"http://localhost:{api_port}"
+        for env_key in (
+            "FIGMA_TOKEN", "GITHUB_TOKEN",
+            "JIRA_API_TOKEN", "JIRA_EMAIL", "JIRA_DOMAIN",
+        ):
+            val = os.environ.get(env_key, "")
+            if val:
+                run_env[env_key] = val
+
+        cwd = project_dir or os.getcwd()
+
+        # ── Fast-path commands get shorter timeout ───────────────
+        _FAST_PREFIXES = (
+            "git ", "git\t", "ls ", "ls\t", "cat ", "head ", "tail ",
+            "echo ", "pwd", "whoami", "date", "wc ", "mkdir ", "cp ",
+            "mv ", "touch ", "which ", "npm list", "npm ls",
+        )
+
+        def _timeout_for(cmd: str) -> float:
+            first_line = cmd.split("\n", 1)[0].strip().lstrip("&& ").lstrip("; ")
+            if first_line.startswith(_FAST_PREFIXES):
+                return 15.0
+            if "npm install" in cmd or "pip install" in cmd:
+                return 120.0
+            return 30.0
+
+        # ── Filter & validate blocks ─────────────────────────────
+        valid: list[tuple[re.Match, str]] = []
+        for m in matches:
+            command = m.group(1).strip()
             if not command:
                 continue
-
-            # Safety check
             cmd_lower = command.lower()
-            blocked = False
-            for b in self._BLOCKED_COMMANDS:
-                if b in cmd_lower:
-                    blocked = True
-                    break
-
-            if blocked:
+            if any(b in cmd_lower for b in self._BLOCKED_COMMANDS):
                 continue
+            valid.append((m, command))
 
-            # Build env with integration tokens
-            run_env = os.environ.copy()
-            api_port = os.environ.get("AGENTARMY_PORT", "8000")
-            run_env["AGENTARMY_API_URL"] = f"http://localhost:{api_port}"
-            for env_key, state_key in [
-                ("FIGMA_TOKEN", "figma_token"),
-                ("GITHUB_TOKEN", "github_token"),
-                ("JIRA_API_TOKEN", "jira_api_token"),
-                ("JIRA_EMAIL", "jira_email"),
-                ("JIRA_DOMAIN", "jira_domain"),
-            ]:
-                val = os.environ.get(env_key, "")
-                if val:
-                    run_env[env_key] = val
+        if not valid:
+            return text
 
-            cwd = project_dir or os.getcwd()
-
+        # ── Execute a single block ───────────────────────────────
+        async def _run_one(command: str) -> tuple[str, int]:
+            """Returns (replacement_html, exit_code)."""
+            timeout = _timeout_for(command)
             try:
                 proc = await _aio.create_subprocess_shell(
                     command,
@@ -1100,50 +1117,64 @@ class BaseAgent(ABC):
                     cwd=cwd,
                     env=run_env,
                 )
-                stdout_bytes, stderr_bytes = await _aio.wait_for(
-                    proc.communicate(), timeout=60.0
+                stdout_b, stderr_b = await _aio.wait_for(
+                    proc.communicate(), timeout=timeout,
                 )
-                stdout_str = (stdout_bytes or b"").decode("utf-8", errors="replace")[-4000:]
-                stderr_str = (stderr_bytes or b"").decode("utf-8", errors="replace")[-2000:]
-                exit_code = proc.returncode or 0
+                stdout_s = (stdout_b or b"").decode("utf-8", errors="replace")[-4000:]
+                stderr_s = (stderr_b or b"").decode("utf-8", errors="replace")[-2000:]
+                rc = proc.returncode or 0
 
-                if exit_code == 0:
-                    status_icon = "\u2705"  # ✅
-                    status_text = "completed successfully"
-                else:
-                    status_icon = "\u274c"  # ❌
-                    status_text = f"exited with code {exit_code}"
+                icon = "\u2705" if rc == 0 else "\u274c"
+                stat = "completed successfully" if rc == 0 else f"exited with code {rc}"
 
-                output_parts = []
-                if stdout_str.strip():
-                    output_parts.append(stdout_str.strip())
-                if stderr_str.strip():
-                    output_parts.append(f"stderr:\n{stderr_str.strip()}")
-                output_combined = "\n".join(output_parts) or "(no output)"
+                parts = []
+                if stdout_s.strip():
+                    parts.append(stdout_s.strip())
+                if stderr_s.strip():
+                    parts.append(f"stderr:\n{stderr_s.strip()}")
+                body = "\n".join(parts) or "(no output)"
 
-                replacement = (
-                    f"{status_icon} **Command {status_text}**\n\n"
+                html = (
+                    f"{icon} **Command {stat}**\n\n"
                     f"<details><summary><code>{command[:120]}</code></summary>\n\n"
-                    f"```\n{output_combined}\n```\n\n"
+                    f"```\n{body}\n```\n\n"
                     f"</details>"
                 )
+                return html, rc
 
             except _aio.TimeoutError:
-                replacement = (
-                    f"\u26a0\ufe0f **Command timed out** (60s limit)\n\n"
+                html = (
+                    f"\u26a0\ufe0f **Command timed out** ({timeout:.0f}s limit)\n\n"
                     f"<details><summary><code>{command[:120]}</code></summary>\n\n"
                     f"```bash\n{command}\n```\n\n"
                     f"</details>"
                 )
+                return html, -1
+
             except Exception as exc:
-                replacement = (
+                html = (
                     f"\u274c **Execution error:** {str(exc)[:200]}\n\n"
                     f"<details><summary><code>{command[:120]}</code></summary>\n\n"
                     f"```bash\n{command}\n```\n\n"
                     f"</details>"
                 )
+                return html, -1
 
-            result_text = result_text[:match.start()] + replacement + result_text[match.end():]
+        # ── Run all blocks in parallel ───────────────────────────
+        results = await _aio.gather(
+            *[_run_one(cmd) for _, cmd in valid],
+            return_exceptions=True,
+        )
+
+        # ── Stitch replacements (reverse to preserve indices) ────
+        result_text = text
+        for i, (m, _cmd) in reversed(list(enumerate(valid))):
+            r = results[i]
+            if isinstance(r, BaseException):
+                repl = f"\u274c **Unexpected error:** {str(r)[:200]}"
+            else:
+                repl = r[0]
+            result_text = result_text[:m.start()] + repl + result_text[m.end():]
 
         return result_text
 
