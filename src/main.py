@@ -2376,6 +2376,7 @@ def create_app() -> FastAPI:
     # Full Google Calendar integration with OAuth2 authorization flow,
     # automatic token refresh, and CRUD operations.
 
+    import os
     from src.bridges.google_oauth import GoogleOAuthTokenManager
     from src.platform.google_calendar import GoogleCalendarAdapter
 
@@ -2404,6 +2405,7 @@ def create_app() -> FastAPI:
             Dict with the authorization URL to redirect the user to.
         """
         try:
+            import base64
             client_id = os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_ID", "")
             redirect_uri = os.environ.get(
                 "AGENTARMY_GOOGLE_OAUTH_REDIRECT_URI",
@@ -2414,7 +2416,6 @@ def create_app() -> FastAPI:
                     status_code=400,
                     detail="Google OAuth not configured. Set AGENTARMY_GOOGLE_OAUTH_CLIENT_ID in the Google Calendar settings tab.",
                 )
-            import base64
             state = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
             url = GoogleOAuthTokenManager.build_authorize_url(
                 client_id=client_id,
