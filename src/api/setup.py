@@ -733,6 +733,7 @@ async def check_infrastructure() -> dict[str, Any]:
 @router.post("/infra/start")
 async def start_service(body: dict[str, Any]) -> dict[str, Any]:
     """Start an infrastructure service by name."""
+    import platform as _platform
     import shutil
     import subprocess
 
@@ -740,20 +741,48 @@ async def start_service(body: dict[str, Any]) -> dict[str, Any]:
     if name not in ("neo4j", "ollama", "redis", "rabbitmq"):
         raise HTTPException(status_code=400, detail=f"Unknown service: {name}")
 
+    # ── Homebrew wrapper for Apple Silicon ────────────────────────
+    # Detect ARM Mac where brew lives at /opt/homebrew and must be
+    # invoked natively to avoid Rosetta 2 prefix conflicts.
+    _is_arm_mac = (
+        _platform.system() == "Darwin" and _platform.machine() == "arm64"
+    )
+
+    def _brew_cmd() -> list[str]:
+        """Return the correct brew invocation for the current arch."""
+        arm_brew = "/opt/homebrew/bin/brew"
+        if _is_arm_mac and os.path.isfile(arm_brew):
+            return [arm_brew]
+        brew = shutil.which("brew")
+        if brew:
+            if _is_arm_mac:
+                return ["arch", "-arm64", brew]
+            return [brew]
+        return []
+
+    def _brew_run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+        """Run a brew command with the correct architecture prefix."""
+        base = _brew_cmd()
+        if not base:
+            raise FileNotFoundError("brew not found")
+        return subprocess.run(base + args, **kwargs)
+
+    has_brew = bool(_brew_cmd())
+
     if name == "ollama":
         # Ollama runs natively (not Docker)
         if not shutil.which("ollama"):
             # Auto-install via Homebrew on macOS
-            if shutil.which("brew"):
+            if has_brew:
                 try:
-                    proc = subprocess.run(
-                        ["brew", "install", "ollama"],
+                    proc = _brew_run(
+                        ["install", "ollama"],
                         capture_output=True, text=True, timeout=180,
                     )
                     if proc.returncode != 0:
                         return {"ok": False, "error": f"Failed to install Ollama via Homebrew: {proc.stderr.strip()[:200]}"}
                 except subprocess.TimeoutExpired:
-                    return {"ok": False, "error": "Ollama Homebrew install timed out — try running 'brew install ollama' manually"}
+                    return {"ok": False, "error": "Ollama Homebrew install timed out — try running 'arch -arm64 brew install ollama' manually"}
                 except Exception as exc:
                     return {"ok": False, "error": f"Ollama install failed: {str(exc)[:200]}"}
             else:
@@ -786,24 +815,24 @@ async def start_service(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "message": f"{name} already running on port {port}"}
 
     # Try Homebrew first (macOS)
-    if shutil.which("brew"):
+    if has_brew:
         brew_pkg = brew_service_map.get(name)
         if brew_pkg:
             try:
                 # Check if installed
-                check = subprocess.run(["brew", "list", brew_pkg], capture_output=True, timeout=10)
+                check = _brew_run(["list", brew_pkg], capture_output=True, timeout=10)
                 if check.returncode != 0:
                     # Install via Homebrew
-                    install = subprocess.run(
-                        ["brew", "install", brew_pkg],
+                    install = _brew_run(
+                        ["install", brew_pkg],
                         capture_output=True, text=True, timeout=180,
                     )
                     if install.returncode != 0:
                         pass  # Fall through to Docker
                     else:
                         # Start via brew services
-                        subprocess.run(
-                            ["brew", "services", "start", brew_pkg],
+                        _brew_run(
+                            ["services", "start", brew_pkg],
                             capture_output=True, timeout=15,
                         )
                         # Wait for port
@@ -815,8 +844,8 @@ async def start_service(body: dict[str, Any]) -> dict[str, Any]:
                         return {"ok": True, "message": f"{name} installed via Homebrew (may still be initializing)"}
                 else:
                     # Already installed — just start
-                    subprocess.run(
-                        ["brew", "services", "start", brew_pkg],
+                    _brew_run(
+                        ["services", "start", brew_pkg],
                         capture_output=True, timeout=15,
                     )
                     if port:
