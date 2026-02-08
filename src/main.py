@@ -2372,43 +2372,128 @@ def create_app() -> FastAPI:
         result = await runner.install(language=payload.get("language", "auto"))
         return result
 
-    # ── Google Calendar proxy endpoints ─────────────────────────────
-    # These proxy through to the Google Calendar API so agents can access
-    # calendar data via simple internal HTTP calls.
+    # ── Google Calendar — OAuth2 + CRUD ─────────────────────────────
+    # Full Google Calendar integration with OAuth2 authorization flow,
+    # automatic token refresh, and CRUD operations.
+
+    from src.bridges.google_oauth import GoogleOAuthTokenManager
+    from src.platform.google_calendar import GoogleCalendarAdapter
+
+    _gcal_oauth = GoogleOAuthTokenManager()
+    _gcal_adapter: Optional[GoogleCalendarAdapter] = None
+
+    def _get_gcal_adapter() -> GoogleCalendarAdapter:
+        nonlocal _gcal_adapter
+        if _gcal_adapter is None:
+            client_id = os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_ID", "")
+            client_secret = os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_SECRET", "")
+            _gcal_adapter = GoogleCalendarAdapter(
+                client_id=client_id,
+                client_secret=client_secret,
+                oauth_manager=_gcal_oauth,
+            )
+        return _gcal_adapter
+
+    # ── OAuth2 authorization flow ──
+
+    @app.get("/api/auth/google/authorize")
+    async def google_auth_authorize() -> dict[str, Any]:
+        """Start the Google OAuth2 authorization flow.
+
+        Returns:
+            Dict with the authorization URL to redirect the user to.
+        """
+        client_id = os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_ID", "")
+        redirect_uri = os.environ.get(
+            "AGENTARMY_GOOGLE_OAUTH_REDIRECT_URI",
+            "http://localhost:8000/api/auth/google/callback",
+        )
+        if not client_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Google OAuth not configured. Set AGENTARMY_GOOGLE_OAUTH_CLIENT_ID in Settings.",
+            )
+        import secrets as _secrets
+        state = _secrets.token_urlsafe(32)
+        url = GoogleOAuthTokenManager.build_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+        )
+        return {"url": url, "state": state}
+
+    @app.get("/api/auth/google/callback")
+    async def google_auth_callback(code: str = "", state: str = "", error: str = ""):
+        """Handle the OAuth2 callback from Google.
+
+        Exchanges the authorization code for tokens and stores them locally.
+        Returns an HTML page that auto-closes or redirects to the dashboard.
+        """
+        from starlette.responses import HTMLResponse
+
+        if error:
+            return HTMLResponse(
+                f"<html><body><h2>Authorization failed</h2><p>{error}</p>"
+                "<p>You can close this tab.</p></body></html>",
+                status_code=400,
+            )
+        if not code:
+            raise HTTPException(status_code=400, detail="Missing authorization code")
+
+        client_id = os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_ID", "")
+        client_secret = os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_SECRET", "")
+        redirect_uri = os.environ.get(
+            "AGENTARMY_GOOGLE_OAUTH_REDIRECT_URI",
+            "http://localhost:8000/api/auth/google/callback",
+        )
+
+        try:
+            tokens = await _gcal_oauth.exchange_code(
+                code=code,
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+            )
+            email = tokens.get("email", "unknown")
+            return HTMLResponse(
+                f"<html><head><title>Google Calendar Connected</title></head>"
+                f"<body style='font-family:sans-serif;text-align:center;padding:60px'>"
+                f"<h2 style='color:#06b6d4'>Google Calendar connected!</h2>"
+                f"<p>Signed in as <strong>{email}</strong></p>"
+                f"<p style='color:#888'>You can close this tab and return to AgentArmy.</p>"
+                f"<script>setTimeout(()=>window.close(),3000)</script>"
+                f"</body></html>"
+            )
+        except Exception as exc:
+            return HTMLResponse(
+                f"<html><body><h2>Authorization failed</h2><p>{exc}</p>"
+                "<p>You can close this tab.</p></body></html>",
+                status_code=500,
+            )
+
+    @app.post("/api/auth/google/revoke")
+    async def google_auth_revoke() -> dict[str, Any]:
+        """Revoke Google Calendar tokens and disconnect."""
+        nonlocal _gcal_adapter
+        await _gcal_oauth.revoke()
+        _gcal_adapter = None  # Force re-creation on next use
+        return {"success": True, "message": "Google Calendar disconnected."}
+
+    @app.get("/api/auth/google/status")
+    async def google_auth_status() -> dict[str, Any]:
+        """Check Google Calendar connection status."""
+        return _gcal_oauth.get_status()
+
+    # ── Google Calendar CRUD endpoints ──
 
     @app.get("/api/calendar/calendars")
     async def list_google_calendars() -> dict[str, Any]:
-        """List all Google Calendar calendars.
-
-        Returns:
-            Dict with calendar list.
-        """
-        import os
-        import httpx as _httpx
-
-        token = os.environ.get("AGENTARMY_GOOGLE_CALENDAR_TOKEN", "")
-        if not token:
-            return {"calendars": [], "error": "Google Calendar not configured. Add token in Settings."}
-
+        """List all Google Calendar calendars."""
+        adapter = _get_gcal_adapter()
+        if not adapter.is_configured:
+            return {"calendars": [], "error": "Google Calendar not configured. Connect in Settings."}
         try:
-            async with _httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-            if resp.status_code != 200:
-                return {"calendars": [], "error": f"Google API error: {resp.status_code}"}
-
-            data = resp.json()
-            calendars = [
-                {
-                    "id": item.get("id"),
-                    "summary": item.get("summary"),
-                    "primary": item.get("primary", False),
-                    "backgroundColor": item.get("backgroundColor"),
-                }
-                for item in data.get("items", [])
-            ]
+            calendars = await adapter.list_calendars()
             return {"calendars": calendars}
         except Exception as exc:
             return {"calendars": [], "error": str(exc)}
@@ -2429,61 +2514,183 @@ def create_app() -> FastAPI:
             time_max: End of range (ISO 8601).
             max_results: Max events to return.
             query: Free text search filter.
-
-        Returns:
-            Dict with events list.
         """
-        import os
-        import httpx as _httpx
-        from urllib.parse import quote
-
-        token = os.environ.get("AGENTARMY_GOOGLE_CALENDAR_TOKEN", "")
-        if not token:
+        adapter = _get_gcal_adapter()
+        if not adapter.is_configured:
             return {"events": [], "error": "Google Calendar not configured."}
-
-        params: dict[str, Any] = {
-            "maxResults": max_results,
-            "singleEvents": "true",
-            "orderBy": "startTime",
-        }
-        if time_min:
-            params["timeMin"] = time_min
-        if time_max:
-            params["timeMax"] = time_max
-        if query:
-            params["q"] = query
-
         try:
-            url = f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events"
-            async with _httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    url,
-                    params=params,
-                    headers={"Authorization": f"Bearer {token}"},
+            if time_min and time_max:
+                events = await adapter.get_events(
+                    start=time_min, end=time_max, calendar_name=calendar_id,
                 )
-            if resp.status_code != 200:
-                return {"events": [], "error": f"Google API error: {resp.status_code}"}
-
-            data = resp.json()
-            events = [
-                {
-                    "id": item.get("id"),
-                    "summary": item.get("summary", "(No title)"),
-                    "start": item.get("start", {}).get("dateTime") or item.get("start", {}).get("date"),
-                    "end": item.get("end", {}).get("dateTime") or item.get("end", {}).get("date"),
-                    "location": item.get("location"),
-                    "description": item.get("description", "")[:200],
-                    "attendees": [
-                        a.get("email") for a in item.get("attendees", [])
-                    ][:10],
-                    "status": item.get("status"),
-                    "htmlLink": item.get("htmlLink"),
+                result = [
+                    {
+                        "id": e.id, "summary": e.title,
+                        "start": e.start, "end": e.end,
+                        "location": e.location,
+                        "description": e.description[:200] if e.description else "",
+                    }
+                    for e in events[:max_results]
+                ]
+            else:
+                # Direct API call for queries without time range
+                from urllib.parse import quote
+                token = await _gcal_oauth.get_valid_token(
+                    os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_ID", ""),
+                    os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_SECRET", ""),
+                )
+                params: dict[str, Any] = {
+                    "maxResults": max_results,
+                    "singleEvents": "true",
+                    "orderBy": "startTime",
                 }
-                for item in data.get("items", [])
-            ]
-            return {"events": events, "calendar_id": calendar_id}
+                if time_min:
+                    params["timeMin"] = time_min
+                if time_max:
+                    params["timeMax"] = time_max
+                if query:
+                    params["q"] = query
+                url = f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events"
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+                if resp.status_code != 200:
+                    return {"events": [], "error": f"Google API error: {resp.status_code}"}
+                data = resp.json()
+                result = [
+                    {
+                        "id": item.get("id"),
+                        "summary": item.get("summary", "(No title)"),
+                        "start": item.get("start", {}).get("dateTime") or item.get("start", {}).get("date"),
+                        "end": item.get("end", {}).get("dateTime") or item.get("end", {}).get("date"),
+                        "location": item.get("location"),
+                        "description": item.get("description", "")[:200],
+                        "attendees": [a.get("email") for a in item.get("attendees", [])][:10],
+                        "status": item.get("status"),
+                        "htmlLink": item.get("htmlLink"),
+                    }
+                    for item in data.get("items", [])
+                ]
+            return {"events": result, "calendar_id": calendar_id}
         except Exception as exc:
             return {"events": [], "error": str(exc)}
+
+    @app.post("/api/calendar/events")
+    async def create_google_event(request: Request) -> dict[str, Any]:
+        """Create a new Google Calendar event.
+
+        Body: {
+            "calendar_id": "primary",
+            "title": "Meeting with Tom",
+            "start": "2026-02-09T13:00:00+01:00",
+            "end": "2026-02-09T14:00:00+01:00",
+            "description": "Discuss project status",
+            "location": "Office"
+        }
+        """
+        adapter = _get_gcal_adapter()
+        if not adapter.is_configured:
+            raise HTTPException(status_code=400, detail="Google Calendar not configured.")
+
+        payload = await request.json()
+        title = payload.get("title", "")
+        if not title:
+            raise HTTPException(status_code=400, detail="title is required")
+
+        start = payload.get("start", "")
+        end = payload.get("end", "")
+        if not start or not end:
+            raise HTTPException(status_code=400, detail="start and end are required (ISO 8601)")
+
+        try:
+            event = await adapter.create_event(
+                calendar_name=payload.get("calendar_id", "primary"),
+                title=title,
+                start=start,
+                end=end,
+                description=payload.get("description", ""),
+                location=payload.get("location", ""),
+            )
+            return {
+                "success": True,
+                "event": {
+                    "id": event.id,
+                    "title": event.title,
+                    "start": event.start,
+                    "end": event.end,
+                    "location": event.location,
+                    "description": event.description,
+                },
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @app.get("/api/calendar/events/{event_id}")
+    async def get_google_event(event_id: str, calendar_id: str = "primary") -> dict[str, Any]:
+        """Get a single Google Calendar event by ID."""
+        adapter = _get_gcal_adapter()
+        if not adapter.is_configured:
+            raise HTTPException(status_code=400, detail="Google Calendar not configured.")
+        try:
+            event = await adapter.get_event(event_id, calendar_name=calendar_id)
+            return {
+                "event": {
+                    "id": event.id,
+                    "title": event.title,
+                    "start": event.start,
+                    "end": event.end,
+                    "location": event.location,
+                    "description": event.description,
+                    "calendar": event.calendar_name,
+                },
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    @app.put("/api/calendar/events/{event_id}")
+    async def update_google_event(event_id: str, request: Request) -> dict[str, Any]:
+        """Update an existing Google Calendar event (partial update).
+
+        Body: { "title"?: str, "start"?: str, "end"?: str, "description"?: str, "location"?: str }
+        """
+        adapter = _get_gcal_adapter()
+        if not adapter.is_configured:
+            raise HTTPException(status_code=400, detail="Google Calendar not configured.")
+        payload = await request.json()
+        try:
+            event = await adapter.update_event(
+                event_id,
+                calendar_name=payload.get("calendar_id", "primary"),
+                title=payload.get("title"),
+                start=payload.get("start"),
+                end=payload.get("end"),
+                description=payload.get("description"),
+                location=payload.get("location"),
+            )
+            return {
+                "success": True,
+                "event": {
+                    "id": event.id,
+                    "title": event.title,
+                    "start": event.start,
+                    "end": event.end,
+                    "location": event.location,
+                    "description": event.description,
+                },
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @app.delete("/api/calendar/events/{event_id}")
+    async def delete_google_event(event_id: str, calendar_id: str = "primary") -> dict[str, Any]:
+        """Delete a Google Calendar event."""
+        adapter = _get_gcal_adapter()
+        if not adapter.is_configured:
+            raise HTTPException(status_code=400, detail="Google Calendar not configured.")
+        try:
+            success = await adapter.delete_event(event_id, calendar_name=calendar_id)
+            return {"success": success}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     @app.post("/api/calendar/free-time")
     async def find_google_free_time(request: Request) -> dict[str, Any]:
@@ -2491,49 +2698,27 @@ def create_app() -> FastAPI:
 
         Body: {
             "calendar_ids": ["primary"],
-            "time_min": "2025-01-06T08:00:00Z",
-            "time_max": "2025-01-10T18:00:00Z"
+            "time_min": "2026-02-09T08:00:00Z",
+            "time_max": "2026-02-13T18:00:00Z"
         }
-
-        Returns:
-            Dict with busy times and calculated free slots.
         """
-        import os
-        import httpx as _httpx
-
-        token = os.environ.get("AGENTARMY_GOOGLE_CALENDAR_TOKEN", "")
-        if not token:
+        adapter = _get_gcal_adapter()
+        if not adapter.is_configured:
             return {"free_slots": [], "error": "Google Calendar not configured."}
 
         payload = await request.json()
-        calendar_ids = payload.get("calendar_ids", ["primary"])
         time_min = payload.get("time_min", "")
         time_max = payload.get("time_max", "")
-
         if not time_min or not time_max:
             raise HTTPException(status_code=400, detail="time_min and time_max are required")
 
         try:
-            body = {
-                "timeMin": time_min,
-                "timeMax": time_max,
-                "items": [{"id": cid} for cid in calendar_ids],
-            }
-            async with _httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    "https://www.googleapis.com/calendar/v3/freeBusy",
-                    json=body,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-            if resp.status_code != 200:
-                return {"free_slots": [], "error": f"Google API error: {resp.status_code}"}
-
-            data = resp.json()
-            return {
-                "calendars": data.get("calendars", {}),
-                "time_min": time_min,
-                "time_max": time_max,
-            }
+            result = await adapter.find_free_time(
+                calendar_ids=payload.get("calendar_ids", ["primary"]),
+                time_min=time_min,
+                time_max=time_max,
+            )
+            return result
         except Exception as exc:
             return {"free_slots": [], "error": str(exc)}
 

@@ -438,6 +438,43 @@ class ClusterSettings(BaseSettings):
     )
 
 
+class GoogleCalendarSettings(BaseSettings):
+    """Google Calendar OAuth2 configuration.
+
+    Required for OAuth2 flow — create a project in Google Cloud Console,
+    enable the Google Calendar API, and create OAuth2 credentials.
+
+    Attributes:
+        oauth_client_id: OAuth2 client ID from Google Cloud Console.
+        oauth_client_secret: OAuth2 client secret.
+        oauth_redirect_uri: Callback URL (must be registered in GCP).
+    """
+
+    oauth_client_id: str = Field(
+        default="", description="Google OAuth2 Client ID"
+    )
+    oauth_client_secret: SecretStr = Field(
+        default=SecretStr(""), description="Google OAuth2 Client Secret"
+    )
+    oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/api/auth/google/callback",
+        description="OAuth2 redirect/callback URI",
+    )
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if OAuth2 credentials are set."""
+        return bool(self.oauth_client_id and self.oauth_client_secret.get_secret_value())
+
+    model_config = SettingsConfigDict(
+        env_prefix="AGENTARMY_GOOGLE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
 class MasterSettings(BaseSettings):
     """Master settings combining all configuration classes.
 
@@ -457,6 +494,7 @@ class MasterSettings(BaseSettings):
     whatsapp: WhatsAppSettings = Field(default_factory=WhatsAppSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     cluster: ClusterSettings = Field(default_factory=ClusterSettings)
+    google_calendar: GoogleCalendarSettings = Field(default_factory=GoogleCalendarSettings)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -486,6 +524,7 @@ class MasterSettings(BaseSettings):
             whatsapp=WhatsAppSettings(),
             security=SecuritySettings(),
             cluster=ClusterSettings(),
+            google_calendar=GoogleCalendarSettings(),
         )
 
     # ── Convenience properties used by main.py and agents ──────────

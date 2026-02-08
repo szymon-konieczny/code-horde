@@ -220,6 +220,20 @@ PROVIDER_KEYS = {
         "test_url": "https://api.github.com/user",
         "group": "integrations",
     },
+    "google_oauth_client_id": {
+        "env_key": "AGENTARMY_GOOGLE_OAUTH_CLIENT_ID",
+        "label": "Google OAuth Client ID",
+        "required": False,
+        "placeholder": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+        "group": "calendar",
+    },
+    "google_oauth_client_secret": {
+        "env_key": "AGENTARMY_GOOGLE_OAUTH_CLIENT_SECRET",
+        "label": "Google OAuth Client Secret",
+        "required": False,
+        "placeholder": "GOCSPX-...",
+        "group": "calendar",
+    },
 }
 
 

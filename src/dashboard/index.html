@@ -3213,12 +3213,13 @@ function Section({ title, icon, children, className = '', collapsible = false, d
 /* ================================================================
    Setup Wizard
    ================================================================ */
-const SETTINGS_TABS = ['llm', 'infra', 'integrations', 'figma', 'whatsapp'];
-const SETTINGS_TAB_LABELS = { llm: 'LLM Providers', infra: 'Infrastructure', integrations: 'Integrations', figma: 'Figma Tokens', whatsapp: 'WhatsApp' };
+const SETTINGS_TABS = ['llm', 'infra', 'integrations', 'calendar', 'figma', 'whatsapp'];
+const SETTINGS_TAB_LABELS = { llm: 'LLM Providers', infra: 'Infrastructure', integrations: 'Integrations', calendar: 'Google Calendar', figma: 'Figma Tokens', whatsapp: 'WhatsApp' };
 const SETTINGS_TAB_ICONS = {
   llm: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   infra: '<rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>',
   integrations: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
   figma: '<path d="M5 5.5A3.5 3.5 0 0 1 8.5 2H12v7H8.5A3.5 3.5 0 0 1 5 5.5z"/><path d="M12 2h3.5a3.5 3.5 0 1 1 0 7H12V2z"/><path d="M12 12.5a3.5 3.5 0 1 1 7 0 3.5 3.5 0 1 1-7 0z"/><path d="M5 19.5A3.5 3.5 0 0 1 8.5 16H12v3.5a3.5 3.5 0 1 1-7 0z"/><path d="M5 12.5A3.5 3.5 0 0 1 8.5 9H12v7H8.5A3.5 3.5 0 0 1 5 12.5z"/>',
   whatsapp: '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
 };
@@ -3232,6 +3233,10 @@ function SettingsModal({ onClose, isFirstRun }) {
   const [testResults, setTestResults] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Google Calendar state
+  const [gcalStatus, setGcalStatus] = useState({ connected: false, email: null });
+  const [gcalLoading, setGcalLoading] = useState(false);
 
   // Figma tokens state
   const [figmaFileKey, setFigmaFileKey] = useState('');
@@ -3284,9 +3289,12 @@ function SettingsModal({ onClose, isFirstRun }) {
     }
   };
 
+  const fetchGcalStatus = () => api('/api/auth/google/status').then(d => setGcalStatus(d)).catch(() => {});
+
   useEffect(() => {
     api('/api/setup/status').then(d => setProviders(d.providers || {})).catch(() => {});
     api('/api/setup/infra').then(d => setInfra(d.services || {})).catch(() => {});
+    fetchGcalStatus();
   }, []);
 
   const setKey = (id, val) => setKeys(prev => ({ ...prev, [id]: val }));
@@ -3565,6 +3573,116 @@ function SettingsModal({ onClose, isFirstRun }) {
                   </h4>
                   <KeyInput id="github_token" label="GitHub Token" placeholder="ghp_..." />
                   <p className="text-[10px] text-slate-600 mt-1">Used for cloning boilerplate repos and creating apps from templates</p>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'calendar' && (
+              <div>
+                <h3 className="text-base font-semibold mb-1">Google Calendar</h3>
+                <p className="text-xs text-slate-500 mb-4">
+                  Connect your Google account to let the Scheduler agent read, create, update, and delete events.
+                </p>
+
+                {/* Connection status */}
+                <div className="bg-slate-800/50 rounded-xl p-4 mb-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-3 h-3 rounded-full ${gcalStatus.connected ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+                      <div>
+                        <p className="text-sm font-medium text-slate-200">
+                          {gcalStatus.connected ? 'Connected' : 'Not connected'}
+                        </p>
+                        {gcalStatus.email && (
+                          <p className="text-xs text-slate-400">{gcalStatus.email}</p>
+                        )}
+                        {gcalStatus.connected && gcalStatus.using_static_token && (
+                          <p className="text-[10px] text-amber-400 mt-0.5">Using static token (OAuth2 recommended)</p>
+                        )}
+                      </div>
+                    </div>
+                    {gcalStatus.connected && !gcalStatus.using_static_token && (
+                      <button
+                        onClick={async () => {
+                          setGcalLoading(true);
+                          try {
+                            await api('/api/auth/google/revoke', { method: 'POST' });
+                            setGcalStatus({ connected: false, email: null });
+                          } catch (e) { console.error('Revoke failed:', e); }
+                          setGcalLoading(false);
+                        }}
+                        disabled={gcalLoading}
+                        className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                      >
+                        {gcalLoading ? 'Disconnecting...' : 'Disconnect'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Connect button */}
+                {!gcalStatus.connected || gcalStatus.using_static_token ? (
+                  <div>
+                    <button
+                      onClick={async () => {
+                        setGcalLoading(true);
+                        try {
+                          const data = await api('/api/auth/google/authorize');
+                          if (data.url) {
+                            window.open(data.url, '_blank', 'width=600,height=700');
+                            // Poll for status change
+                            const poll = setInterval(async () => {
+                              try {
+                                const s = await api('/api/auth/google/status');
+                                if (s.connected && !s.using_static_token) {
+                                  setGcalStatus(s);
+                                  clearInterval(poll);
+                                  setGcalLoading(false);
+                                }
+                              } catch {}
+                            }, 2000);
+                            // Stop polling after 5 minutes
+                            setTimeout(() => { clearInterval(poll); setGcalLoading(false); }, 300000);
+                          } else {
+                            setGcalLoading(false);
+                          }
+                        } catch (e) {
+                          console.error('Authorize failed:', e);
+                          setGcalLoading(false);
+                        }
+                      }}
+                      disabled={gcalLoading}
+                      className="w-full flex items-center justify-center gap-2 bg-white hover:bg-slate-100 text-slate-800 font-medium rounded-xl px-4 py-3 text-sm transition-colors disabled:opacity-50"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                      {gcalLoading ? 'Connecting...' : 'Connect Google Calendar'}
+                    </button>
+                    <p className="text-[10px] text-slate-600 mt-2 text-center">
+                      Requires OAuth Client ID and Secret in the Integrations tab or .env file
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-500">
+                    <p>Your Scheduler agent can now:</p>
+                    <ul className="mt-2 space-y-1 text-slate-400">
+                      <li className="flex items-center gap-2"><span className="text-emerald-400">&#10003;</span> List your calendars and events</li>
+                      <li className="flex items-center gap-2"><span className="text-emerald-400">&#10003;</span> Create new events</li>
+                      <li className="flex items-center gap-2"><span className="text-emerald-400">&#10003;</span> Update existing events</li>
+                      <li className="flex items-center gap-2"><span className="text-emerald-400">&#10003;</span> Delete events</li>
+                      <li className="flex items-center gap-2"><span className="text-emerald-400">&#10003;</span> Find free time slots</li>
+                    </ul>
+                    <p className="mt-3 text-slate-600">Try: "Add a meeting with Tom tomorrow at 13:00"</p>
+                  </div>
+                )}
+
+                {/* OAuth Client ID/Secret (also accessible from integrations tab) */}
+                <div className="mt-5 pt-4 border-t border-slate-800">
+                  <h4 className="text-sm font-semibold text-slate-300 mb-1">OAuth2 Credentials</h4>
+                  <p className="text-[10px] text-slate-600 mb-3">
+                    Create at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" className="text-brand-400 hover:underline">Google Cloud Console</a>. Enable the Calendar API in your project.
+                  </p>
+                  <KeyInput id="google_oauth_client_id" label="OAuth Client ID" placeholder="xxxx.apps.googleusercontent.com" />
+                  <KeyInput id="google_oauth_client_secret" label="OAuth Client Secret" placeholder="GOCSPX-..." />
                 </div>
               </div>
             )}

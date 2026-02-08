@@ -1,6 +1,7 @@
 """Scheduler agent — macOS Calendar, Google Calendar, availability & time management."""
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -8,6 +9,7 @@ import structlog
 
 from src.core.agent_base import AgentCapability, AgentIdentity, AgentState, BaseAgent
 from src.platform.base import CalendarAdapter, PlatformCapability
+from src.platform.google_calendar import GoogleCalendarAdapter
 
 logger = structlog.get_logger(__name__)
 
@@ -144,24 +146,43 @@ GCAL_API_REFERENCE = {
     "list_calendars": {
         "label": "List Google Calendars",
         "description": "Fetch all Google Calendar calendars the user has access to",
-        "endpoint": "GET /calendars",
+        "endpoint": "GET /api/calendar/calendars",
     },
     "list_events": {
         "label": "List Events",
         "description": "Fetch events from a calendar within a time range",
-        "endpoint": "GET /calendars/{calendarId}/events",
-        "params": ["timeMin", "timeMax", "maxResults", "query"],
+        "endpoint": "GET /api/calendar/events",
+        "params": ["calendar_id", "time_min", "time_max", "max_results", "query"],
     },
     "get_event": {
         "label": "Get Event Details",
         "description": "Fetch full details of a specific event",
-        "endpoint": "GET /calendars/{calendarId}/events/{eventId}",
+        "endpoint": "GET /api/calendar/events/{event_id}",
+        "params": ["calendar_id", "event_id"],
+    },
+    "create_event": {
+        "label": "Create Event",
+        "description": "Create a new event on Google Calendar",
+        "endpoint": "POST /api/calendar/events",
+        "params": ["calendar_id", "title", "start", "end", "description", "location"],
+    },
+    "update_event": {
+        "label": "Update Event",
+        "description": "Update an existing event's title, time, description, or location",
+        "endpoint": "PUT /api/calendar/events/{event_id}",
+        "params": ["calendar_id", "event_id", "title", "start", "end", "description", "location"],
+    },
+    "delete_event": {
+        "label": "Delete Event",
+        "description": "Delete an event from Google Calendar",
+        "endpoint": "DELETE /api/calendar/events/{event_id}",
+        "params": ["calendar_id", "event_id"],
     },
     "find_free_time": {
         "label": "Find Free Time",
         "description": "Find available time slots across calendars",
-        "endpoint": "POST /freeBusy",
-        "params": ["calendarIds", "timeMin", "timeMax"],
+        "endpoint": "POST /api/calendar/free-time",
+        "params": ["calendar_ids", "time_min", "time_max"],
     },
 }
 
@@ -324,13 +345,15 @@ class SchedulerAgent(BaseAgent):
                 AgentCapability(
                     name="create_event",
                     version="1.0.0",
-                    description="Create a new calendar event",
+                    description="Create a new calendar event (Google Calendar or macOS)",
                     parameters={
-                        "target": "str",  # "macos", "google"
+                        "target": "str",  # "google" (default), "macos"
                         "title": "str",
-                        "start": "str",
-                        "end": "str",
+                        "start": "str",   # ISO 8601
+                        "end": "str",     # ISO 8601
                         "calendar_name": "str",
+                        "description": "str",
+                        "location": "str",
                         "notes": "str",
                     },
                 ),
@@ -387,6 +410,20 @@ class SchedulerAgent(BaseAgent):
             self._calendar = get_calendar_adapter()
         return self._calendar
 
+    @property
+    def google_calendar(self) -> GoogleCalendarAdapter:
+        """Lazy-load a GoogleCalendarAdapter configured from env vars.
+
+        Returns a cached instance so the OAuth token manager isn't re-created
+        on every call.
+        """
+        if not hasattr(self, "_google_calendar_adapter"):
+            self._google_calendar_adapter = GoogleCalendarAdapter(
+                client_id=os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_ID", ""),
+                client_secret=os.environ.get("AGENTARMY_GOOGLE_OAUTH_CLIENT_SECRET", ""),
+            )
+        return self._google_calendar_adapter
+
     def _get_system_context(self) -> str:
         """Get system context for LLM reasoning.
 
@@ -433,14 +470,20 @@ class SchedulerAgent(BaseAgent):
         )
         sections.append(
             "## GOOGLE CALENDAR API\n"
-            "The system has a built-in Google Calendar integration with these operations:\n"
+            "The system has a built-in Google Calendar integration with full CRUD support:\n"
             f"{gcal_operations}\n"
             "Use the built-in `/api/calendar/*` endpoints — DO NOT use raw Google API URLs.\n"
             "Available endpoints:\n"
-            "  - `GET /api/calendar/calendars` — list all calendars\n"
-            "  - `GET /api/calendar/events?calendar_id=...&time_min=...&time_max=...` — list events\n"
-            "  - `GET /api/calendar/event?calendar_id=...&event_id=...` — get event details\n"
-            "  - `POST /api/calendar/free-time` — find free time slots\n"
+            "  - `GET  /api/calendar/calendars` — list all calendars\n"
+            "  - `GET  /api/calendar/events?calendar_id=...&time_min=...&time_max=...` — list events\n"
+            "  - `POST /api/calendar/events` — create a new event (body: calendar_id, title, start, end, description?, location?)\n"
+            "  - `GET  /api/calendar/events/{event_id}?calendar_id=...` — get event details\n"
+            "  - `PUT  /api/calendar/events/{event_id}` — update event (body: calendar_id, title?, start?, end?, description?, location?)\n"
+            "  - `DELETE /api/calendar/events/{event_id}?calendar_id=...` — delete event\n"
+            "  - `POST /api/calendar/free-time` — find free time slots\n\n"
+            "To create an event on Google Calendar, you can either:\n"
+            "1. Call the adapter directly via the `google` target in create_event tasks\n"
+            "2. Or instruct the user that the system will POST to /api/calendar/events\n"
         )
 
         # ── Scheduling workflows ──
@@ -632,6 +675,13 @@ class SchedulerAgent(BaseAgent):
     async def _handle_create_event(self, task: dict[str, Any]) -> dict[str, Any]:
         """Create a new calendar event.
 
+        Supports two targets:
+        - ``"google"`` — creates the event directly via GoogleCalendarAdapter
+        - ``"macos"``  — falls back to AppleScript (LLM generates the command)
+
+        When the target is ``"google"`` and all required fields are present the
+        event is created immediately without an extra LLM round-trip.
+
         Args:
             task: Task with event creation parameters.
 
@@ -639,11 +689,59 @@ class SchedulerAgent(BaseAgent):
             Dictionary with creation result.
         """
         params = task.get("context", {})
-        target = params.get("target", "macos")
+        target = params.get("target", "google")  # default to google for cross-platform
         title = params.get("title", "")
 
         await logger.ainfo("create_event", target=target, title=title)
 
+        # ── Direct Google Calendar creation ────────────────────────
+        if target == "google" and self.google_calendar.is_configured:
+            start = params.get("start", "")
+            end = params.get("end", "")
+            calendar_name = params.get("calendar_name") or params.get("calendar_id") or "primary"
+            description = params.get("description", "") or params.get("notes", "")
+            location = params.get("location", "")
+
+            if title and start and end:
+                try:
+                    event = await self.google_calendar.create_event(
+                        calendar_name=calendar_name,
+                        title=title,
+                        start=start,
+                        end=end,
+                        description=description,
+                        location=location,
+                    )
+
+                    self._scheduling_history.append({
+                        "type": "create_event",
+                        "target": "google",
+                        "title": title,
+                        "event_id": event.id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+
+                    return {
+                        "status": "completed",
+                        "type": "create_event",
+                        "target": "google",
+                        "title": event.title,
+                        "event_id": event.id,
+                        "start": event.start_time,
+                        "end": event.end_time,
+                        "calendar": event.calendar_name,
+                        "summary": f"Created '{event.title}' on Google Calendar ({event.start_time} → {event.end_time})",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                except Exception as exc:
+                    await logger.awarning(
+                        "google_create_event_failed",
+                        error=str(exc),
+                        title=title,
+                    )
+                    # Fall through to LLM-based approach
+
+        # ── LLM-assisted creation (macOS or incomplete params) ─────
         try:
             chain = await self.think(task, strategy="step_by_step")
             analysis = chain.conclusion
