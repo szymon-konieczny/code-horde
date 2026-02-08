@@ -5,8 +5,11 @@ import hmac
 import os
 import pathlib
 import time
+import yaml
+import traceback as _traceback_mod
 import uuid
 from abc import ABC, abstractmethod
+from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional, TYPE_CHECKING
@@ -119,6 +122,8 @@ class BaseAgent(ABC):
         self._task_count_completed = 0
         self._task_count_failed = 0
         self._logger = structlog.get_logger(self.identity.name)
+        # Error ring buffer — stores last N errors for API/dashboard inspection
+        self._error_log: deque[dict[str, Any]] = deque(maxlen=100)
         # References for inter-agent task creation — set by the orchestrator
         self._task_manager: Any = None
         self._orchestrator: Any = None
@@ -140,6 +145,48 @@ class BaseAgent(ABC):
             Seconds since agent startup.
         """
         return time.time() - self.startup_time
+
+    def _log_error(
+        self,
+        task_id: str,
+        error: Exception,
+        context: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Append an error to the agent's in-memory ring buffer.
+
+        Args:
+            task_id: ID of the task that caused the error.
+            error: The exception that was raised.
+            context: Optional extra context (task type, payload snippet, etc.).
+        """
+        self._error_log.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "task_id": task_id,
+            "error_message": str(error),
+            "error_type": type(error).__name__,
+            "traceback": _traceback_mod.format_exc(),
+            "context": context or {},
+        })
+
+    def get_error_log(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the most recent errors, newest first.
+
+        Args:
+            limit: Maximum number of entries to return.
+
+        Returns:
+            List of error dicts ordered newest-first.
+        """
+        entries = list(self._error_log)
+        return list(reversed(entries[-limit:]))
+
+    def get_system_context_public(self) -> str:
+        """Return the agent's system context string (public wrapper).
+
+        Returns:
+            The system context used in LLM prompts.
+        """
+        return self._get_system_context()
 
     async def startup(self) -> None:
         """Initialize and start the agent.
@@ -203,6 +250,36 @@ class BaseAgent(ABC):
             f"Your capabilities include: {caps}. "
             f"Security level: {self.identity.security_level}/5."
         )
+
+    def _load_custom_instructions(self) -> dict[str, str]:
+        """Load custom prepend/append instructions from agent config YAML.
+
+        Reads ``config/agents/{prefix}.yaml`` and extracts the
+        ``custom_instructions`` section.  Returns empty strings on any
+        failure so the agent always works even without a config file.
+
+        Returns:
+            Dict with ``prepend`` and ``append`` keys.
+        """
+        prefix = self.identity.id.split("-")[0] if "-" in self.identity.id else self.identity.id
+        config_path = pathlib.Path("config/agents") / f"{prefix}.yaml"
+
+        result: dict[str, str] = {"prepend": "", "append": ""}
+
+        if not config_path.exists():
+            return result
+
+        try:
+            config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if config_data and isinstance(config_data, dict):
+                ci = config_data.get("custom_instructions", {})
+                if isinstance(ci, dict):
+                    result["prepend"] = str(ci.get("prepend", "") or "").strip()
+                    result["append"] = str(ci.get("append", "") or "").strip()
+        except Exception:
+            pass  # Non-critical — agent works without custom instructions
+
+        return result
 
     async def think(
         self,
@@ -326,6 +403,7 @@ class BaseAgent(ABC):
             ("openai", "AGENTARMY_OPENAI_API_KEY"),
             ("gemini", "AGENTARMY_GEMINI_API_KEY"),
             ("kimi", "AGENTARMY_KIMI_API_KEY"),
+            ("custom", "AGENTARMY_CUSTOM_API_KEY"),
         ]:
             key = os.environ.get(env_var, "")
             if key and not key.startswith(("your_", "YOUR_")):
@@ -377,6 +455,8 @@ class BaseAgent(ABC):
             "moonshot-v1-8k": "kimi",
             "moonshot-v1-32k": "kimi",
             "moonshot-v1-128k": "kimi",
+            # Custom (OpenAI-compatible)
+            "custom": "custom",
             # Local
             "ollama": "ollama",
         }
@@ -391,6 +471,7 @@ class BaseAgent(ABC):
             "openai": "AGENTARMY_OPENAI_API_KEY",
             "gemini": "AGENTARMY_GEMINI_API_KEY",
             "kimi": "AGENTARMY_KIMI_API_KEY",
+            "custom": "AGENTARMY_CUSTOM_API_KEY",
         }
         api_key = os.environ.get(env_map.get(provider_name, ""), "") or None
         if provider_name == "ollama":
@@ -421,6 +502,7 @@ class BaseAgent(ABC):
             "openai": "AGENTARMY_OPENAI_DEFAULT_MODEL",
             "gemini": "AGENTARMY_GEMINI_DEFAULT_MODEL",
             "kimi": "AGENTARMY_KIMI_DEFAULT_MODEL",
+            "custom": "AGENTARMY_CUSTOM_DEFAULT_MODEL",
             "ollama": "AGENTARMY_OLLAMA_DEFAULT_MODEL",
         }
         env_var = model_env.get(provider_name)
@@ -465,6 +547,12 @@ class BaseAgent(ABC):
             if model:
                 kwargs["model"] = model
             return KimiClient(**kwargs)
+        elif provider_name == "custom":
+            from src.models.custom_openai_client import CustomOpenAIClient
+            kwargs = {"api_key": api_key}
+            if model:
+                kwargs["model"] = model
+            return CustomOpenAIClient(**kwargs)
         elif provider_name == "ollama":
             from src.models.ollama_client import OllamaClient
             kwargs = {}
@@ -775,10 +863,22 @@ class BaseAgent(ABC):
         if integrations_context:
             integrations_context = f"\n\n{integrations_context}\n"
 
+        # Load user-customisable instructions from config YAML
+        _ci = self._load_custom_instructions()
+        _prepend = (
+            f"\n\n=== CUSTOM INSTRUCTIONS (PREPEND) ===\n{_ci['prepend']}\n=== END CUSTOM INSTRUCTIONS ===\n"
+            if _ci["prepend"] else ""
+        )
+        _append = (
+            f"\n\n=== CUSTOM INSTRUCTIONS (APPEND) ===\n{_ci['append']}\n=== END CUSTOM INSTRUCTIONS ===\n"
+            if _ci["append"] else ""
+        )
+
         system_prompt = (
             f"You are {self.identity.name}, a specialized AI agent in the AgentArmy system. "
             f"Your role is: {self.identity.role}. "
-            f"{self._get_system_context()}\n\n"
+            f"{self._get_system_context()}"
+            f"{_prepend}\n\n"
             f"Your capabilities: {caps}.\n\n"
             f"## TOOL ACCESS\n"
             f"You have access to a terminal/shell in the project directory. "
@@ -800,6 +900,15 @@ class BaseAgent(ABC):
             f"{memory_context}\n"
             f"{project_context}\n"
             f"{url_context}\n"
+            f"## REASONING APPROACH\n"
+            f"Before answering, think through the problem systematically:\n"
+            f"1. **Understand** — Identify what the user is really asking and the core requirements\n"
+            f"2. **Analyze** — Consider your domain expertise, the project context, and any constraints\n"
+            f"3. **Plan** — Decide on your approach before executing\n"
+            f"4. **Execute** — Carry out the plan with attention to detail\n"
+            f"5. **Verify** — Check your reasoning and output for correctness\n"
+            f"For complex questions, structure your response with clear sections. "
+            f"Show your reasoning when it helps the user understand.\n\n"
             f"Respond helpfully and concisely to the user's message. "
             f"When project agent instructions are provided (AGENTS.md), ALWAYS follow those rules. "
             f"When project files are provided, always reference specific details from them. "
@@ -819,6 +928,7 @@ class BaseAgent(ABC):
             f"- **Shadows**: Show CSS (e.g., `Card Shadow: 0 2px 4px rgba(0,0,0,0.1)`)\n"
             f"- **Border Radii**: List values (e.g., `4px, 8px, 12px, 24px`)\n"
             f"NEVER dump raw JSON to the user. Parse API responses and present them beautifully."
+            f"{_append}"
         )
 
         llm_request = LLMRequest(
@@ -869,6 +979,17 @@ class BaseAgent(ABC):
                 agent_id=self.identity.id,
                 errors=provider_errors,
             )
+            # Record the failure in the error ring buffer and bump the counter
+            combined_error = Exception(
+                f"All LLM providers failed: {'; '.join(provider_errors)}"
+            )
+            self._log_error(
+                task_id=task.get("id", "chat"),
+                error=combined_error,
+                context={"task_type": "chat", "providers_tried": len(provider_errors)},
+            )
+            self._task_count_failed += 1
+
             error_details = "\n".join(f"  - {e}" for e in provider_errors) if provider_errors else "  No providers attempted."
             response_text = (
                 f"I'm **{self.identity.name}** ({self.identity.role} agent). "
@@ -1107,6 +1228,9 @@ class BaseAgent(ABC):
         except Exception as exc:
             self._task_count_failed += 1
             self._state = AgentState.ERROR
+
+            # Capture in error ring buffer for API/dashboard visibility
+            self._log_error(task_id, exc, {"task_type": task.get("type")})
 
             audit_log = {
                 "task_id": task_id,

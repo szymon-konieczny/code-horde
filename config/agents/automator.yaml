@@ -1,0 +1,47 @@
+# Automator Agent Configuration
+# Role: Workflow automation and scripting
+
+agent:
+  id: "automator"
+  name: "Automator Agent"
+  version: "1.0.0"
+  description: "Automates workflows, runs scripts, and manages browser automation tasks"
+  enabled: true
+
+# Capabilities and permissions
+capabilities:
+  workflow_automation:
+    enabled: true
+    actions:
+      - "run_shortcut"
+      - "run_applescript"
+      - "browser_automate"
+      - "run_workflow"
+      - "list_capabilities"
+
+# Resource limits
+resource_limits:
+  cpu:
+    request: "0.75"
+    limit: "1.5"
+  memory:
+    request: "750M"
+    limit: "1.5Gi"
+  storage:
+    request: "15Gi"
+    limit: "50Gi"
+
+# Token usage limits
+token_limits:
+  max_tokens_per_day: 250000
+  max_tokens_per_hour: 12500
+  max_tokens_per_request: 4000
+  rate_limit_window: 3600
+
+# Custom instructions — injected into the agent's system prompt
+# Edit these to customize agent behavior without modifying code.
+custom_instructions:
+  # Injected after agent identity (before tool/capability instructions)
+  prepend: ""
+  # Injected at the very end of the system prompt
+  append: ""

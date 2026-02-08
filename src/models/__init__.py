@@ -25,6 +25,7 @@ from src.models.kimi_client import KimiClient
 from src.models.huggingface_client import HuggingFaceClient
 from src.models.bielik_client import BielikClient
 from src.models.ollama_client import OllamaClient
+from src.models.custom_openai_client import CustomOpenAIClient
 from src.models.rlm_engine import (
     RLMEngine,
     RLMConfig,
@@ -60,6 +61,7 @@ __all__ = [
     "HuggingFaceClient",
     "BielikClient",
     "OllamaClient",
+    "CustomOpenAIClient",
     # RLM engine
     "RLMEngine",
     "RLMConfig",

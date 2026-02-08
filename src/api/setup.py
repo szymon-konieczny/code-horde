@@ -729,7 +729,21 @@ async def start_service(body: dict[str, Any]) -> dict[str, Any]:
     if name == "ollama":
         # Ollama runs natively (not Docker)
         if not shutil.which("ollama"):
-            return {"ok": False, "error": "Ollama not installed. Run: brew install ollama"}
+            # Auto-install via Homebrew on macOS
+            if shutil.which("brew"):
+                try:
+                    proc = subprocess.run(
+                        ["brew", "install", "ollama"],
+                        capture_output=True, text=True, timeout=180,
+                    )
+                    if proc.returncode != 0:
+                        return {"ok": False, "error": f"Failed to install Ollama via Homebrew: {proc.stderr.strip()[:200]}"}
+                except subprocess.TimeoutExpired:
+                    return {"ok": False, "error": "Ollama Homebrew install timed out — try running 'brew install ollama' manually"}
+                except Exception as exc:
+                    return {"ok": False, "error": f"Ollama install failed: {str(exc)[:200]}"}
+            else:
+                return {"ok": False, "error": "Ollama not installed and Homebrew not available. Install from https://ollama.com"}
         # Check if already running
         if _is_port_open("127.0.0.1", 11434):
             return {"ok": True, "message": "Ollama already running"}
@@ -748,10 +762,62 @@ async def start_service(body: dict[str, Any]) -> dict[str, Any]:
                 return {"ok": True, "message": "Ollama started"}
         return {"ok": False, "error": "Ollama started but not responding yet — try again in a moment"}
 
-    # Docker-based services (neo4j, redis, rabbitmq)
+    # ── Homebrew-first fallback for neo4j, redis, rabbitmq ───────
+    port_map = {"neo4j": 7687, "redis": 6379, "rabbitmq": 5672}
+    brew_service_map = {"neo4j": "neo4j", "redis": "redis", "rabbitmq": "rabbitmq-server"}
+    port = port_map.get(name, 0)
+
+    # Check if already running
+    if port and _is_port_open("127.0.0.1", port):
+        return {"ok": True, "message": f"{name} already running on port {port}"}
+
+    # Try Homebrew first (macOS)
+    if shutil.which("brew"):
+        brew_pkg = brew_service_map.get(name)
+        if brew_pkg:
+            try:
+                # Check if installed
+                check = subprocess.run(["brew", "list", brew_pkg], capture_output=True, timeout=10)
+                if check.returncode != 0:
+                    # Install via Homebrew
+                    install = subprocess.run(
+                        ["brew", "install", brew_pkg],
+                        capture_output=True, text=True, timeout=180,
+                    )
+                    if install.returncode != 0:
+                        pass  # Fall through to Docker
+                    else:
+                        # Start via brew services
+                        subprocess.run(
+                            ["brew", "services", "start", brew_pkg],
+                            capture_output=True, timeout=15,
+                        )
+                        # Wait for port
+                        if port:
+                            for _ in range(12):
+                                await asyncio.sleep(0.5)
+                                if _is_port_open("127.0.0.1", port):
+                                    return {"ok": True, "message": f"{name} installed and started via Homebrew on port {port}"}
+                        return {"ok": True, "message": f"{name} installed via Homebrew (may still be initializing)"}
+                else:
+                    # Already installed — just start
+                    subprocess.run(
+                        ["brew", "services", "start", brew_pkg],
+                        capture_output=True, timeout=15,
+                    )
+                    if port:
+                        for _ in range(12):
+                            await asyncio.sleep(0.5)
+                            if _is_port_open("127.0.0.1", port):
+                                return {"ok": True, "message": f"{name} started via Homebrew on port {port}"}
+                    return {"ok": True, "message": f"{name} brew service started (may still be initializing)"}
+            except Exception:
+                pass  # Fall through to Docker
+
+    # Docker-based fallback
     compose_bin = shutil.which("docker") and "docker compose"
     if not compose_bin:
-        return {"ok": False, "error": "Docker not available"}
+        return {"ok": False, "error": f"Cannot start {name}: neither Homebrew nor Docker available. Install via 'brew install {brew_service_map.get(name, name)}' or install Docker."}
 
     project_root = pathlib.Path(__file__).resolve().parent.parent.parent
     compose_file = project_root / "docker" / "docker-compose.local.yaml"
@@ -764,17 +830,16 @@ async def start_service(body: dict[str, Any]) -> dict[str, Any]:
             capture_output=True, text=True, timeout=30,
         )
         if proc.returncode != 0:
-            return {"ok": False, "error": proc.stderr.strip() or "Failed to start container"}
+            stderr = proc.stderr.strip()[:200]
+            return {"ok": False, "error": f"Docker failed: {stderr}" if stderr else "Failed to start container"}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc)[:200]}
 
     # Wait for port to open
-    port_map = {"neo4j": 7687, "redis": 6379, "rabbitmq": 5672}
-    port = port_map.get(name, 0)
     if port:
         for _ in range(10):
             await asyncio.sleep(0.5)
             if _is_port_open("127.0.0.1", port):
-                return {"ok": True, "message": f"{name} started on port {port}"}
+                return {"ok": True, "message": f"{name} started via Docker on port {port}"}
 
     return {"ok": True, "message": f"{name} container started (may still be initializing)"}

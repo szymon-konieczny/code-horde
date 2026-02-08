@@ -17,6 +17,7 @@ class ModelProvider(str, Enum):
     HUGGINGFACE = "huggingface"
     BIELIK = "bielik"
     OLLAMA = "ollama"
+    CUSTOM = "custom"
 
 
 class ModelTier(str, Enum):

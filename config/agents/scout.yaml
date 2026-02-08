@@ -1,0 +1,46 @@
+# Scout Agent Configuration
+# Role: Research and competitive analysis
+
+agent:
+  id: "scout"
+  name: "Scout Research Agent"
+  version: "1.0.0"
+  description: "Conducts technology research, monitors advisories, and performs competitive analysis"
+  enabled: true
+
+# Capabilities and permissions
+capabilities:
+  research:
+    enabled: true
+    actions:
+      - "research_technology"
+      - "monitor_advisories"
+      - "competitive_analysis"
+      - "research_summary"
+
+# Resource limits
+resource_limits:
+  cpu:
+    request: "0.5"
+    limit: "1.0"
+  memory:
+    request: "512M"
+    limit: "1Gi"
+  storage:
+    request: "10Gi"
+    limit: "50Gi"
+
+# Token usage limits
+token_limits:
+  max_tokens_per_day: 250000
+  max_tokens_per_hour: 12500
+  max_tokens_per_request: 8000
+  rate_limit_window: 3600
+
+# Custom instructions — injected into the agent's system prompt
+# Edit these to customize agent behavior without modifying code.
+custom_instructions:
+  # Injected after agent identity (before tool/capability instructions)
+  prepend: ""
+  # Injected at the very end of the system prompt
+  append: ""

@@ -247,3 +247,11 @@ archival:
   retention_days: 30
   archive_location: "/app/artifacts/test-results"
   compress_archives: true
+
+# Custom instructions — injected into the agent's system prompt
+# Edit these to customize agent behavior without modifying code.
+custom_instructions:
+  # Injected after agent identity (before tool/capability instructions)
+  prepend: ""
+  # Injected at the very end of the system prompt
+  append: ""

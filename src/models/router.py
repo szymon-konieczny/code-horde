@@ -133,6 +133,7 @@ class ModelRouter:
             ModelProvider.OPENAI,
             ModelProvider.GEMINI,
             ModelProvider.KIMI,
+            ModelProvider.CUSTOM,
             ModelProvider.OLLAMA,
         ]
 

@@ -332,3 +332,11 @@ data_export:
     - frequency: "weekly"
       time: "Sunday 3:00 AM"
       destination: "s3://backups/weekly"
+
+# Custom instructions — injected into the agent's system prompt
+# Edit these to customize agent behavior without modifying code.
+custom_instructions:
+  # Injected after agent identity (before tool/capability instructions)
+  prepend: ""
+  # Injected at the very end of the system prompt
+  append: ""

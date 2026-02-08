@@ -2462,6 +2462,104 @@ def create_app() -> FastAPI:
         except Exception as exc:
             return {"free_slots": [], "error": str(exc)}
 
+    # ── Agent detail endpoints ────────────────────────────────
+    def _find_agent(agent_id: str):
+        """Resolve an agent by exact or prefix match."""
+        agents = _app_state.get("agents", {})
+        if agent_id in agents:
+            return agents[agent_id]
+        for aid, ag in agents.items():
+            if aid.startswith(agent_id):
+                return ag
+        return None
+
+    @app.get("/agents/{agent_id}/detail")
+    async def get_agent_detail(agent_id: str) -> dict[str, Any]:
+        """Get comprehensive details for a single agent."""
+        agent = _find_agent(agent_id)
+        if agent is None:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+        heartbeat = agent.report_status()
+
+        # Load YAML config (best-effort)
+        config_yaml = ""
+        prefix = agent_id.split("-")[0] if "-" in agent_id else agent_id
+        config_path = pathlib.Path("config/agents") / f"{prefix}.yaml"
+        if config_path.exists():
+            try:
+                config_yaml = config_path.read_text(encoding="utf-8")
+            except Exception:
+                config_yaml = ""
+
+        # System context
+        try:
+            system_context = agent.get_system_context_public()
+        except Exception:
+            system_context = ""
+
+        return {
+            "identity": {
+                "id": agent.identity.id,
+                "name": agent.identity.name,
+                "role": agent.identity.role,
+                "security_level": getattr(agent.identity, "security_level", 1),
+                "capabilities": [
+                    {
+                        "name": cap.name,
+                        "version": cap.version,
+                        "description": cap.description,
+                        "parameters": getattr(cap, "parameters", {}),
+                    }
+                    for cap in agent.identity.capabilities
+                ],
+            },
+            "state": heartbeat.state.value,
+            "uptime_seconds": heartbeat.uptime_seconds,
+            "tasks_completed": heartbeat.tasks_completed,
+            "tasks_failed": heartbeat.tasks_failed,
+            "system_context": system_context,
+            "config_yaml": config_yaml,
+            "errors": agent.get_error_log(limit=20),
+        }
+
+    @app.get("/agents/{agent_id}/errors")
+    async def get_agent_errors(agent_id: str, limit: int = 50) -> dict[str, Any]:
+        """Get agent error log."""
+        agent = _find_agent(agent_id)
+        if agent is None:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+        return {"agent_id": agent.identity.id, "errors": agent.get_error_log(limit=limit)}
+
+    @app.put("/agents/{agent_id}/config")
+    async def update_agent_config(agent_id: str, request: Request) -> dict[str, Any]:
+        """Update agent YAML configuration."""
+        import yaml as _yaml
+
+        agent = _find_agent(agent_id)
+        if agent is None:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+        body = await request.json()
+        config_text = body.get("config_yaml", "")
+
+        # Validate YAML syntax
+        try:
+            _yaml.safe_load(config_text)
+        except _yaml.YAMLError as exc:
+            return {"success": False, "error": f"Invalid YAML: {exc}"}
+
+        prefix = agent_id.split("-")[0] if "-" in agent_id else agent_id
+        config_path = pathlib.Path("config/agents") / f"{prefix}.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            config_path.write_text(config_text, encoding="utf-8")
+        except Exception as exc:
+            return {"success": False, "error": f"Write failed: {exc}"}
+
+        return {"success": True}
+
     return app
 
 

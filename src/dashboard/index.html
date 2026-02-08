@@ -313,13 +313,13 @@ function Header({ connected, health, onSettings }) {
 /* ================================================================
    Agent Card
    ================================================================ */
-function AgentCard({ id, info }) {
+function AgentCard({ id, info, onClick }) {
   const prefix = id.split('-')[0];
   const meta = AGENT_META[prefix] || AGENT_META[info.role] || AGENT_META.devops;
   const state = STATE_STYLE[info.state] || STATE_STYLE.offline;
 
   return (
-    <div className={`agent-card rounded-xl border ${meta.border} ${meta.bg} p-4 fade-in`}>
+    <div className={`agent-card rounded-xl border ${meta.border} ${meta.bg} p-4 fade-in cursor-pointer hover:brightness-110 transition-all`} onClick={() => onClick && onClick(id)}>
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2.5">
           <div className={`w-9 h-9 rounded-lg ${meta.bg} border ${meta.border} flex items-center justify-center`}>
@@ -354,7 +354,7 @@ function AgentCard({ id, info }) {
 /* ================================================================
    Agent Grid
    ================================================================ */
-function AgentGrid({ agents }) {
+function AgentGrid({ agents, onAgentDetailClick }) {
   const entries = Object.entries(agents || {});
   if (!entries.length) {
     return (
@@ -366,7 +366,294 @@ function AgentGrid({ agents }) {
   }
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-      {entries.map(([id, info]) => <AgentCard key={id} id={id} info={info} />)}
+      {entries.map(([id, info]) => <AgentCard key={id} id={id} info={info} onClick={onAgentDetailClick} />)}
+    </div>
+  );
+}
+
+// ── Agent Detail Panel (slide-over) ─────────────────────────
+function AgentDetailPanel({ agentId, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [editMode, setEditMode] = useState(false);
+  const [configText, setConfigText] = useState('');
+  const [saveStatus, setSaveStatus] = useState(null);
+
+  useEffect(() => {
+    if (!agentId) return;
+    setLoading(true);
+    api(`/agents/${agentId}/detail`)
+      .then(d => { setDetail(d); setConfigText(d.config_yaml || ''); })
+      .catch(() => setDetail(null))
+      .finally(() => setLoading(false));
+  }, [agentId]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const handleSaveConfig = async () => {
+    setSaveStatus(null);
+    try {
+      const res = await api(`/agents/${agentId}/config`, {
+        method: 'PUT',
+        body: JSON.stringify({ config_yaml: configText }),
+      });
+      if (res.success) {
+        setSaveStatus({ ok: true, msg: 'Saved' });
+        setEditMode(false);
+      } else {
+        setSaveStatus({ ok: false, msg: res.error || 'Save failed' });
+      }
+    } catch (err) {
+      setSaveStatus({ ok: false, msg: err.message });
+    }
+  };
+
+  const tabs = [
+    { id: 'overview', label: 'Overview', icon: 'info' },
+    { id: 'errors', label: 'Errors', icon: 'alert-triangle' },
+    { id: 'config', label: 'Config', icon: 'settings' },
+  ];
+
+  const prefix = agentId ? agentId.split('-')[0] : '';
+  const meta = AGENT_META[prefix] || AGENT_META.devops;
+
+  return (
+    <div className="fixed inset-0 z-[200] flex justify-end bg-black/60 backdrop-blur-sm fade-in" onClick={onClose}>
+      <div
+        className="w-full max-w-[500px] h-full bg-slate-900 border-l border-slate-700 shadow-2xl flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className={`w-9 h-9 rounded-lg ${meta.bg} border ${meta.border} flex items-center justify-center`}>
+              <Icon name={meta.icon} size={18} className={meta.color} />
+            </div>
+            <div>
+              <h2 className="font-semibold text-sm text-slate-100">{detail?.identity?.name || agentId}</h2>
+              <p className="text-[11px] text-slate-500 uppercase tracking-wider">{detail?.identity?.role || prefix}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors">
+            <Icon name="x" size={18} />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-slate-800 px-4 shrink-0">
+          {tabs.map(t => (
+            <button
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 ${
+                activeTab === t.id
+                  ? 'border-brand-500 text-brand-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Icon name={t.icon} size={13} />
+              {t.label}
+              {t.id === 'errors' && detail?.errors?.length > 0 && (
+                <span className="ml-1 bg-red-500/20 text-red-400 text-[10px] rounded-full px-1.5">{detail.errors.length}</span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto scrollbar-thin p-5">
+          {loading ? (
+            <div className="flex justify-center py-12">
+              <div className="w-6 h-6 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : !detail ? (
+            <div className="text-center py-12 text-slate-500">
+              <Icon name="alert-circle" size={28} className="mx-auto mb-2 opacity-40" />
+              <p className="text-sm">Failed to load agent details</p>
+            </div>
+          ) : (
+            <>
+              {/* ── Overview Tab ──────────────────────────── */}
+              {activeTab === 'overview' && (
+                <div className="space-y-5">
+                  {/* State & Security */}
+                  <div className="flex items-center gap-3">
+                    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                      detail.state === 'idle' ? 'bg-emerald-500/15 text-emerald-400' :
+                      detail.state === 'busy' ? 'bg-amber-500/15 text-amber-400' :
+                      'bg-red-500/15 text-red-400'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        detail.state === 'idle' ? 'bg-emerald-400' :
+                        detail.state === 'busy' ? 'bg-amber-400' :
+                        'bg-red-400'
+                      }`} />
+                      {detail.state}
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      Security: {'★'.repeat(detail.identity.security_level || 1)}{'☆'.repeat(5 - (detail.identity.security_level || 1))}
+                    </span>
+                  </div>
+
+                  {/* Stats */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-slate-800/60 rounded-lg p-3 text-center">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Completed</p>
+                      <p className="text-lg font-bold font-mono text-emerald-400">{detail.tasks_completed}</p>
+                    </div>
+                    <div className="bg-slate-800/60 rounded-lg p-3 text-center">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Failed</p>
+                      <p className="text-lg font-bold font-mono text-red-400">{detail.tasks_failed}</p>
+                    </div>
+                    <div className="bg-slate-800/60 rounded-lg p-3 text-center">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Uptime</p>
+                      <p className="text-lg font-bold font-mono text-slate-300">{formatUptime(detail.uptime_seconds)}</p>
+                    </div>
+                  </div>
+
+                  {/* System Context */}
+                  <div>
+                    <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">System Context</h3>
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-[200px] overflow-y-auto scrollbar-thin">
+                      <pre className="text-[11px] text-slate-400 whitespace-pre-wrap font-mono leading-relaxed">{detail.system_context || 'No system context defined.'}</pre>
+                    </div>
+                  </div>
+
+                  {/* Capabilities */}
+                  <div>
+                    <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                      Capabilities ({detail.identity.capabilities?.length || 0})
+                    </h3>
+                    <div className="space-y-1.5">
+                      {(detail.identity.capabilities || []).map((cap, ci) => (
+                        <details key={ci} className="group bg-slate-800/40 border border-slate-700/30 rounded-lg">
+                          <summary className="flex items-center justify-between px-3 py-2 cursor-pointer text-sm text-slate-300 hover:text-white transition-colors">
+                            <span className="flex items-center gap-2">
+                              <Icon name="cpu" size={12} className="text-brand-400" />
+                              {cap.name}
+                              <span className="text-[10px] text-slate-600">v{cap.version}</span>
+                            </span>
+                            <Icon name="chevron-right" size={12} className="text-slate-600 group-open:rotate-90 transition-transform" />
+                          </summary>
+                          <div className="px-3 pb-2 text-[11px] text-slate-500">
+                            {cap.description}
+                            {cap.parameters && Object.keys(cap.parameters).length > 0 && (
+                              <div className="mt-1.5 bg-slate-900/50 rounded p-2">
+                                <p className="text-[10px] text-slate-600 mb-1">Parameters:</p>
+                                {Object.entries(cap.parameters).map(([k, v]) => (
+                                  <div key={k} className="flex gap-2 text-[10px]">
+                                    <span className="text-slate-500 font-mono">{k}:</span>
+                                    <span className="text-slate-400">{String(v)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Errors Tab ────────────────────────────── */}
+              {activeTab === 'errors' && (
+                <div className="space-y-2">
+                  {(!detail.errors || detail.errors.length === 0) ? (
+                    <div className="text-center py-12 text-slate-500">
+                      <Icon name="check-circle" size={28} className="mx-auto mb-2 text-emerald-500/40" />
+                      <p className="text-sm">No errors recorded</p>
+                    </div>
+                  ) : detail.errors.map((err, ei) => (
+                    <details key={ei} className="group bg-red-900/10 border border-red-500/20 rounded-lg overflow-hidden">
+                      <summary className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-red-900/20 transition-colors">
+                        <Icon name="alert-circle" size={14} className="text-red-400 shrink-0" />
+                        <span className="text-[11px] bg-red-500/15 text-red-400 rounded px-1.5 py-0.5 font-mono">{err.error_type}</span>
+                        <span className="text-xs text-slate-400 truncate flex-1">{err.error_message}</span>
+                        <span className="text-[10px] text-slate-600 shrink-0">{err.task_id?.slice(0, 8)}</span>
+                        <Icon name="chevron-right" size={12} className="text-slate-600 group-open:rotate-90 transition-transform shrink-0" />
+                      </summary>
+                      <div className="px-3 pb-3 border-t border-red-500/10">
+                        <p className="text-[10px] text-slate-600 mt-2 mb-1">{err.timestamp}</p>
+                        {err.traceback && (
+                          <pre className="text-[10px] text-red-300/70 bg-slate-950 rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono max-h-[200px] overflow-y-auto scrollbar-thin">{err.traceback}</pre>
+                        )}
+                        {err.context && Object.keys(err.context).length > 0 && (
+                          <div className="mt-1.5 text-[10px] text-slate-500">
+                            Context: {JSON.stringify(err.context)}
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              )}
+
+              {/* ── Config Tab ────────────────────────────── */}
+              {activeTab === 'config' && (
+                <div>
+                  {saveStatus && (
+                    <div className={`mb-3 px-3 py-2 rounded-lg text-xs ${
+                      saveStatus.ok ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/15 text-red-400 border border-red-500/20'
+                    }`}>
+                      {saveStatus.msg}
+                    </div>
+                  )}
+                  {editMode ? (
+                    <div className="space-y-3">
+                      <div className="p-3 bg-slate-900/60 border border-slate-700/60 rounded-lg">
+                        <p className="text-[11px] font-semibold text-slate-300 mb-1.5">Custom Instructions</p>
+                        <p className="text-[10px] text-slate-500 leading-relaxed">
+                          Add <code className="text-brand-400">custom_instructions.prepend</code> to inject text after the agent's identity (before tool instructions).
+                          Add <code className="text-brand-400">custom_instructions.append</code> to inject text at the very end of the system prompt.
+                          The agent's core behavior stays intact — your instructions layer on top.
+                        </p>
+                      </div>
+                      <textarea
+                        value={configText}
+                        onChange={e => setConfigText(e.target.value)}
+                        placeholder={'# Agent Configuration\n\ncustom_instructions:\n  # Injected after agent identity\n  prepend: |\n    Always use TypeScript instead of JavaScript.\n    Follow the Airbnb style guide.\n  # Injected at end of system prompt\n  append: |\n    Always include unit tests with your code.'}
+                        className="w-full h-[400px] bg-slate-950 border border-slate-700 rounded-lg p-3 text-[11px] font-mono text-slate-300 focus:outline-none focus:border-brand-500/50 resize-none scrollbar-thin placeholder:text-slate-700"
+                        spellCheck={false}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => { setEditMode(false); setConfigText(detail.config_yaml || ''); setSaveStatus(null); }}
+                          className="px-3 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                        >Cancel</button>
+                        <button
+                          onClick={handleSaveConfig}
+                          className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors"
+                        >Save Config</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="flex justify-end mb-2">
+                        <button
+                          onClick={() => setEditMode(true)}
+                          className="flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+                        >
+                          <Icon name="edit-2" size={11} />
+                          Edit Config
+                        </button>
+                      </div>
+                      <pre className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-[11px] font-mono text-slate-400 whitespace-pre-wrap overflow-y-auto max-h-[450px] scrollbar-thin">
+                        {detail.config_yaml || '# No configuration file found.\n# Click "Edit Config" to create one.\n#\n# Tip: Add custom_instructions to customize this agent\'s behavior:\n#\n# custom_instructions:\n#   prepend: "Your extra instructions here..."\n#   append: "Final instructions here..."'}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1159,6 +1446,7 @@ const CHAT_MODELS = [
   { id: 'gemini-2.0-flash',              label: 'Gemini 2.0 Flash',    provider: 'gemini', desc: 'Google fast' },
   { id: 'gemini-2.5-pro',                label: 'Gemini 2.5 Pro',      provider: 'gemini', desc: 'Google pro' },
   { id: 'kimi-k2.5',                     label: 'Kimi K2.5',           provider: 'kimi',   desc: 'Moonshot AI multimodal' },
+  { id: 'custom',                          label: 'Custom (OpenAI-compat)', provider: 'custom', desc: 'Any OpenAI-compatible API' },
   { id: 'ollama',                         label: 'Ollama (local)',      provider: 'ollama', desc: 'Local inference' },
 ];
 
@@ -1654,9 +1942,17 @@ function ChatPanel({ messages, onSend, onEditMessage, onRetryMessage, onRunComma
                   <div className={`chat-bubble max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed overflow-hidden ${
                     m.role === 'user'
                       ? 'bg-brand-600/20 border border-brand-500/20 text-brand-100'
-                      : 'bg-slate-800 border border-slate-700/50 text-slate-200'
+                      : m.isError
+                        ? 'bg-red-900/20 border border-red-500/30 text-red-200'
+                        : 'bg-slate-800 border border-slate-700/50 text-slate-200'
                   }`}>
-                    {m.role !== 'user' && m.agent && (
+                    {m.isError && (
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <Icon name="alert-triangle" size={13} className="text-red-400" />
+                        <span className="text-[10px] font-semibold text-red-400 uppercase tracking-wider">Error</span>
+                      </div>
+                    )}
+                    {m.role !== 'user' && m.agent && !m.isError && (
                       <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-0.5">{m.agent}</p>
                     )}
                     {m.role === 'user' && editingIdx === i ? (
@@ -2910,9 +3206,11 @@ function SettingsModal({ onClose, isFirstRun }) {
   };
 
   const [startingService, setStartingService] = useState({});
+  const [infraError, setInfraError] = useState(null);
 
   const startService = async (serviceName) => {
     setStartingService(prev => ({ ...prev, [serviceName]: true }));
+    setInfraError(null);
     try {
       const res = await api('/api/setup/infra/start', {
         method: 'POST',
@@ -2923,10 +3221,10 @@ function SettingsModal({ onClose, isFirstRun }) {
         const d = await api('/api/setup/infra');
         setInfra(d.services || {});
       } else {
-        alert(res.error || 'Failed to start service');
+        setInfraError(`${serviceName}: ${res.error || 'Failed to start service'}`);
       }
     } catch (err) {
-      alert(err.message || 'Failed to start service');
+      setInfraError(`${serviceName}: ${err.message || 'Failed to start service'}`);
     } finally {
       setStartingService(prev => ({ ...prev, [serviceName]: false }));
     }
@@ -3012,6 +3310,33 @@ function SettingsModal({ onClose, isFirstRun }) {
                 <KeyInput id="gemini" label="Google Gemini" placeholder="AIza..." />
                 <KeyInput id="kimi" label="Kimi (Moonshot)" placeholder="sk-..." />
                 <KeyInput id="huggingface" label="Hugging Face" placeholder="hf_..." />
+                <div className="mt-4 pt-4 border-t border-slate-700">
+                  <h4 className="text-sm font-semibold text-slate-300 mb-1">Custom OpenAI-Compatible Provider</h4>
+                  <p className="text-[10px] text-slate-500 mb-3">Connect any OpenAI-compatible API (DeepSeek, Mistral, Groq, Together, Fireworks, xAI, Cerebras, etc.)</p>
+                  <KeyInput id="custom" label="API Key" placeholder="sk-..." />
+                  <div className="mb-3">
+                    <label className="text-sm font-medium text-slate-300 mb-1 block">Base URL</label>
+                    <input
+                      type="text"
+                      value={keys['custom_base'] || ''}
+                      onChange={e => setKey('custom_base', e.target.value)}
+                      placeholder="https://api.deepseek.com/v1"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm font-mono
+                                 placeholder:text-slate-600 focus:outline-none focus:border-brand-500/50 focus:ring-1 focus:ring-brand-500/20"
+                    />
+                  </div>
+                  <div className="mb-3">
+                    <label className="text-sm font-medium text-slate-300 mb-1 block">Model Name</label>
+                    <input
+                      type="text"
+                      value={keys['custom_model'] || ''}
+                      onChange={e => setKey('custom_model', e.target.value)}
+                      placeholder="deepseek-coder"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm font-mono
+                                 placeholder:text-slate-600 focus:outline-none focus:border-brand-500/50 focus:ring-1 focus:ring-brand-500/20"
+                    />
+                  </div>
+                </div>
               </div>
             )}
 
@@ -3022,6 +3347,15 @@ function SettingsModal({ onClose, isFirstRun }) {
                   Only PostgreSQL is required. Redis and Neo4j fall back to in-memory storage automatically.
                   Run <code className="text-brand-400">make infra-up</code> to start services.
                 </p>
+                {infraError && (
+                  <div className="mb-2 px-3 py-2 bg-red-900/20 border border-red-500/20 rounded-lg flex items-start gap-2">
+                    <Icon name="alert-triangle" size={14} className="text-red-400 mt-0.5 shrink-0" />
+                    <p className="text-xs text-red-300 flex-1">{infraError}</p>
+                    <button onClick={() => setInfraError(null)} className="text-red-400 hover:text-red-300 shrink-0">
+                      <Icon name="x" size={12} />
+                    </button>
+                  </div>
+                )}
                 <div className="bg-slate-800/50 rounded-xl p-3 mb-3">
                   <InfraRow name="postgresql" label="PostgreSQL" />
                   <InfraRow name="redis" label="Redis" optional startable />
@@ -3308,6 +3642,7 @@ function App() {
   const [clusterMode, setClusterMode] = useState('standalone');
   const [memoryTypes, setMemoryTypes] = useState([]);
   const [memoryScopes, setMemoryScopes] = useState([]);
+  const [selectedAgentId, setSelectedAgentId] = useState(null);
 
   // ── check if setup is needed (only show welcome on first run) ────
   useEffect(() => {
@@ -3560,6 +3895,7 @@ function App() {
           role: 'assistant',
           agent: 'system',
           text: `Error: ${err.message}`,
+          isError: true,
         }]);
       }
     } finally {
@@ -3774,6 +4110,7 @@ function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       {settingsModal}
+      {selectedAgentId && <AgentDetailPanel agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />}
       <Header connected={connected} health={health} onSettings={() => setShowSettings(true)} />
 
       <main className="flex-1 max-w-[1600px] mx-auto w-full px-6 py-4 flex gap-5 overflow-hidden">
@@ -3817,7 +4154,7 @@ function App() {
               <TaskPanel onSubmit={handleSubmitTask} onDelete={handleDeleteTask} onCancel={handleCancelTask} onOpenInChat={handleOpenTaskInChat} tasks={tasks} />
             )}
             {leftTab === 'agents' && (
-              <AgentGrid agents={agents} />
+              <AgentGrid agents={agents} onAgentDetailClick={setSelectedAgentId} />
             )}
             {leftTab === 'workers' && (
               <WorkerPanel workers={clusterWorkers} health={clusterHealth} />

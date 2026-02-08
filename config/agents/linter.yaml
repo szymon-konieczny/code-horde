@@ -1,0 +1,47 @@
+# Linter Agent Configuration
+# Role: Code quality and linting
+
+agent:
+  id: "linter"
+  name: "Linter Agent"
+  version: "1.0.0"
+  description: "Performs code linting, identifies issues, and maintains code quality standards"
+  enabled: true
+
+# Capabilities and permissions
+capabilities:
+  code_quality:
+    enabled: true
+    actions:
+      - "lint_project"
+      - "lint_file"
+      - "fix_issues"
+      - "setup_linter"
+      - "lint_report"
+
+# Resource limits
+resource_limits:
+  cpu:
+    request: "0.75"
+    limit: "1.5"
+  memory:
+    request: "750M"
+    limit: "1.5Gi"
+  storage:
+    request: "15Gi"
+    limit: "50Gi"
+
+# Token usage limits
+token_limits:
+  max_tokens_per_day: 200000
+  max_tokens_per_hour: 10000
+  max_tokens_per_request: 4000
+  rate_limit_window: 3600
+
+# Custom instructions — injected into the agent's system prompt
+# Edit these to customize agent behavior without modifying code.
+custom_instructions:
+  # Injected after agent identity (before tool/capability instructions)
+  prepend: ""
+  # Injected at the very end of the system prompt
+  append: ""

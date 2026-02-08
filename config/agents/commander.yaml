@@ -176,3 +176,11 @@ scheduling:
     - name: "daily_audit_report"
       schedule: "0 2 * * *"
       action: "generate_audit_report"
+
+# Custom instructions — injected into the agent's system prompt
+# Edit these to customize agent behavior without modifying code.
+custom_instructions:
+  # Injected after agent identity (before tool/capability instructions)
+  prepend: ""
+  # Injected at the very end of the system prompt
+  append: ""
