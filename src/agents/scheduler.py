@@ -110,23 +110,41 @@ end tell
         "label": "Create Calendar Event (macOS)",
         "description": "Creates a new event in the default macOS Calendar.app calendar",
         "script": '''
--- Args: title, startDateTime, endDateTime [, notes]
+-- Args: title, startISO (YYYY-MM-DDTHH:MM), endISO (YYYY-MM-DDTHH:MM) [, notes]
+-- Parses dates from ISO strings — fully locale-independent.
 on run argv
     set evtTitle to item 1 of argv
-    set evtStart to date (item 2 of argv)
-    set evtEnd to date (item 3 of argv)
+    set startStr to item 2 of argv
+    set endStr to item 3 of argv
     set evtNotes to ""
     if (count of argv) > 3 then
         set evtNotes to item 4 of argv
     end if
 
+    -- Parse start: "2026-02-10T14:00"
+    set evtStart to current date
+    set year of evtStart to (text 1 thru 4 of startStr) as integer
+    set month of evtStart to (text 6 thru 7 of startStr) as integer
+    set day of evtStart to (text 9 thru 10 of startStr) as integer
+    set hours of evtStart to (text 12 thru 13 of startStr) as integer
+    set minutes of evtStart to (text 15 thru 16 of startStr) as integer
+    set seconds of evtStart to 0
+
+    -- Parse end: "2026-02-10T15:00"
+    set evtEnd to current date
+    set year of evtEnd to (text 1 thru 4 of endStr) as integer
+    set month of evtEnd to (text 6 thru 7 of endStr) as integer
+    set day of evtEnd to (text 9 thru 10 of endStr) as integer
+    set hours of evtEnd to (text 12 thru 13 of endStr) as integer
+    set minutes of evtEnd to (text 15 thru 16 of endStr) as integer
+    set seconds of evtEnd to 0
+
     tell application "Calendar"
-        -- Use the default calendar (works regardless of locale/language)
         set targetCalendar to default calendar
         make new event at targetCalendar with properties {summary:evtTitle, start date:evtStart, end date:evtEnd, description:evtNotes}
         set calName to name of targetCalendar
     end tell
-    return "Created: " & evtTitle & " on " & evtStart & " (calendar: " & calName & ")"
+    return "Created: " & evtTitle & " on " & (evtStart as text) & " (calendar: " & calName & ")"
 end run
 ''',
     },
@@ -476,13 +494,25 @@ class SchedulerAgent(BaseAgent):
             sections.append(
                 "## LOCAL CALENDAR (AppleScript / osascript)\n"
                 "You can read and create events in the local Calendar.app:\n"
-                f"{macos_templates}\n"
-                "To run these, write the AppleScript to a temp file and execute with:\n"
-                "  `osascript /tmp/calendar_script.scpt`\n"
-                "IMPORTANT: When creating events, always use `default calendar` — "
-                "NEVER hardcode a calendar name like \"Calendar\" because the name "
-                "varies by locale (e.g. \"Kalendarz\" in Polish).\n"
-                "Always capture output with bash command substitution.\n"
+                f"{macos_templates}\n\n"
+                "### HOW TO RUN SCRIPTS\n"
+                "For **reading** events, write the exact script from the templates above "
+                "to a temp file and run with: `osascript /tmp/calendar_script.scpt`\n\n"
+                "For **creating** events, use the create_event template with arguments:\n"
+                "```bash\n"
+                "cat > /tmp/cal_create.scpt << 'APPLESCRIPT'\n"
+                "<paste the create_event script template exactly as provided above>\n"
+                "APPLESCRIPT\n"
+                "osascript /tmp/cal_create.scpt \"Meeting with Tom\" \"2026-02-10T14:00\" \"2026-02-10T15:00\" \"Notes here\"\n"
+                "```\n"
+                "Date arguments MUST be ISO format: `YYYY-MM-DDTHH:MM` (e.g. `2026-02-10T14:00`).\n\n"
+                "⚠️ CRITICAL RULES:\n"
+                "- NEVER write your own AppleScript for creating events — always use the template above.\n"
+                "- NEVER use `date \"...\"` coercion — it is locale-dependent and WILL FAIL on non-English macOS.\n"
+                "- NEVER hardcode calendar names like \"Calendar\" — always use `default calendar`.\n"
+                "- NEVER set date properties (year, month, day, hours, minutes) individually inline — "
+                "the template already handles this correctly.\n"
+                "- Always capture output with bash command substitution.\n"
             )
         else:
             sections.append(
