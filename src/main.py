@@ -2413,8 +2413,8 @@ def create_app() -> FastAPI:
                 status_code=400,
                 detail="Google OAuth not configured. Set AGENTARMY_GOOGLE_OAUTH_CLIENT_ID in Settings.",
             )
-        import secrets as _secrets
-        state = _secrets.token_urlsafe(32)
+        import base64
+        state = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
         url = GoogleOAuthTokenManager.build_authorize_url(
             client_id=client_id,
             redirect_uri=redirect_uri,
