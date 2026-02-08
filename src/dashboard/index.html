@@ -1980,11 +1980,51 @@ function ChatPanel({ messages, onSend, onEditMessage, onRetryMessage, onRunComma
     // ── /calendar command — open date/time picker for scheduler ──
     const calMatch = input.trim().match(/^\/calendar\s+(.+)/i);
     if (calMatch) {
-      setCalendarMessage(calMatch[1].trim());
-      // Pre-fill: next round hour tomorrow
+      const msg = calMatch[1].trim();
+      setCalendarMessage(msg);
+
+      // ── Parse time from message ──
       const d = new Date();
-      d.setDate(d.getDate() + 1);
-      d.setMinutes(0, 0, 0);
+      let timeParsed = false;
+
+      // 24h format: "at 13:00", "o 13:00", "13:30"
+      const time24 = msg.match(/(?:at|o|@)\s*(\d{1,2}):(\d{2})/i) || msg.match(/\b(\d{1,2}):(\d{2})\b/);
+      if (time24) {
+        d.setHours(parseInt(time24[1], 10), parseInt(time24[2], 10), 0, 0);
+        timeParsed = true;
+      }
+
+      // 12h format: "at 4pm", "at 4:30 PM", "4 am"
+      if (!timeParsed) {
+        const time12 = msg.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+        if (time12) {
+          let h = parseInt(time12[1], 10);
+          const m = time12[2] ? parseInt(time12[2], 10) : 0;
+          if (time12[3].toLowerCase() === 'pm' && h < 12) h += 12;
+          if (time12[3].toLowerCase() === 'am' && h === 12) h = 0;
+          d.setHours(h, m, 0, 0);
+          timeParsed = true;
+        }
+      }
+
+      // Fallback: next round hour
+      if (!timeParsed) {
+        d.setHours(d.getHours() + 1, 0, 0, 0);
+      }
+
+      // ── Parse date from message ──
+      const msgLower = msg.toLowerCase();
+      if (/\b(tomorrow|jutro)\b/.test(msgLower)) {
+        d.setDate(d.getDate() + 1);
+      } else if (/\b(today|dzi[śs]|dzisiaj)\b/.test(msgLower)) {
+        // keep today
+      } else if (/\b(pojutrze|day after tomorrow)\b/.test(msgLower)) {
+        d.setDate(d.getDate() + 2);
+      } else {
+        // No date keyword → default to tomorrow if time already passed today
+        if (d <= new Date()) d.setDate(d.getDate() + 1);
+      }
+
       setCalendarDateTime(toDateTimeLocal(d));
       setCalendarDuration(60);
       setShowCalendarPicker(true);
