@@ -3624,12 +3624,18 @@ function SettingsModal({ onClose, isFirstRun }) {
                 {!gcalStatus.connected || gcalStatus.using_static_token ? (
                   <div>
                     <button
-                      onClick={async () => {
+                      onClick={() => {
                         setGcalLoading(true);
-                        try {
-                          const data = await api('/api/auth/google/authorize');
+                        // Open popup synchronously so the browser trusts the click
+                        const popup = window.open('about:blank', 'gcal_auth', 'width=600,height=700');
+                        api('/api/auth/google/authorize').then(data => {
                           if (data.url) {
-                            window.open(data.url, '_blank', 'width=600,height=700');
+                            if (popup && !popup.closed) {
+                              popup.location.href = data.url;
+                            } else {
+                              // Popup was blocked — fall back to same-tab redirect
+                              window.location.href = data.url;
+                            }
                             // Poll for status change
                             const poll = setInterval(async () => {
                               try {
@@ -3644,12 +3650,15 @@ function SettingsModal({ onClose, isFirstRun }) {
                             // Stop polling after 5 minutes
                             setTimeout(() => { clearInterval(poll); setGcalLoading(false); }, 300000);
                           } else {
+                            if (popup && !popup.closed) popup.close();
                             setGcalLoading(false);
                           }
-                        } catch (e) {
+                        }).catch(e => {
                           console.error('Authorize failed:', e);
+                          if (popup && !popup.closed) popup.close();
                           setGcalLoading(false);
-                        }
+                          alert('Failed to start Google authorization: ' + e.message);
+                        });
                       }}
                       disabled={gcalLoading}
                       className="w-full flex items-center justify-center gap-2 bg-white hover:bg-slate-100 text-slate-800 font-medium rounded-xl px-4 py-3 text-sm transition-colors disabled:opacity-50"
