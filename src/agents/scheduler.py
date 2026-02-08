@@ -536,10 +536,30 @@ class SchedulerAgent(BaseAgent):
             f"{cap_lines}\n"
         )
 
+        # Detect user's local timezone
+        import time as _time
+        try:
+            local_tz = _time.tzname[0]
+            utc_offset_sec = -_time.timezone if _time.daylight == 0 else -_time.altzone
+            utc_offset_h = utc_offset_sec // 3600
+            utc_offset_m = abs(utc_offset_sec % 3600) // 60
+            tz_offset_str = f"{utc_offset_h:+03d}:{utc_offset_m:02d}"
+            try:
+                from datetime import datetime as _dt
+                tz_iana = _dt.now().astimezone().tzinfo
+                tz_display = f"{tz_iana} (UTC{tz_offset_str})"
+            except Exception:
+                tz_display = f"{local_tz} (UTC{tz_offset_str})"
+        except Exception:
+            tz_display = "unknown — ask the user"
+
+        now_local = datetime.now().strftime("%A, %B %d, %Y at %H:%M")
+
         sections.append(
             "## TIME FORMAT\n"
             "Always use ISO 8601 format for dates: YYYY-MM-DDTHH:MM:SS±HH:MM\n"
-            "Default timezone: use the user's local timezone.\n"
+            f"User's timezone: **{tz_display}**\n"
+            f"Current local time: **{now_local}**\n"
             "When presenting times to the user, use readable format: 'Mon Jan 6, 9:00 AM - 10:00 AM'\n\n"
             "## BEST PRACTICES\n"
             + ("- When asked about 'my calendar', check BOTH local and Google Calendar\n"
