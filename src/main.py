@@ -784,7 +784,7 @@ def create_app() -> FastAPI:
             try:
                 result, success = await asyncio.wait_for(
                     asyncio.shield(processing),
-                    timeout=180.0,
+                    timeout=600.0,
                 )
 
                 if success:
@@ -801,8 +801,12 @@ def create_app() -> FastAPI:
 
             except asyncio.TimeoutError:
                 processing.cancel()
-                await task_manager.fail_task(task_id, "Response timeout")
-                response_text = "The request timed out. Please try again with a simpler query."
+                await task_manager.fail_task(task_id, "Response timeout (10 min)")
+                response_text = (
+                    "The agent timed out after 10 minutes. "
+                    "This may indicate an issue with the LLM provider or network connectivity. "
+                    "Check the server logs and try again."
+                )
 
             except asyncio.CancelledError:
                 await task_manager.cancel_task(task_id)
