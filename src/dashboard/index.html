@@ -2591,13 +2591,13 @@ function ChatPanel({ messages, onSend, onEditMessage, onRetryMessage, onRunComma
               {sttError === 'denied' && (
                 <div>
                   <p className="font-semibold text-red-400 mb-1">Microphone access denied</p>
-                  <p className="text-slate-400">To enable voice input:</p>
+                  <p className="text-slate-400">To enable voice input on macOS:</p>
                   <ol className="text-slate-400 mt-1 ml-3 space-y-0.5 list-decimal">
-                    <li>Click the <span className="text-slate-300 font-medium">lock/site icon</span> in the address bar</li>
-                    <li>Find <span className="text-slate-300 font-medium">Microphone</span> and set to <span className="text-emerald-400 font-medium">Allow</span></li>
-                    <li>Reload the page, then click the mic button again</li>
+                    <li>Open <span className="text-slate-300 font-medium">System Settings</span> → <span className="text-slate-300 font-medium">Privacy & Security</span> → <span className="text-slate-300 font-medium">Microphone</span></li>
+                    <li>Find <span className="text-slate-300 font-medium">AgentArmy</span> (or your app) and toggle it <span className="text-emerald-400 font-medium">On</span></li>
+                    <li>Restart the app, then click the mic button again</li>
                   </ol>
-                  <p className="text-slate-500 mt-1">macOS: also check System Settings &gt; Privacy &amp; Security &gt; Microphone &gt; allow your browser</p>
+                  <p className="text-slate-500 mt-1 text-[10px]">Browser: click the lock icon in the address bar → Microphone → Allow</p>
                 </div>
               )}
               {sttError === 'service-denied' && (
