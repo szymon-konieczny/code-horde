@@ -770,6 +770,7 @@ def create_app() -> FastAPI:
             # ── Single-agent path (existing behaviour) ────────────
             agent = agents_list[0]
             agent_name = agent.identity.id
+            success = False  # default — set to True only on successful processing
 
             await task_manager.assign_task(task_id, agent.identity.id)
             await task_manager.update_task_status(task_id, TaskStatus.IN_PROGRESS)
