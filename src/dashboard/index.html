@@ -1550,7 +1550,17 @@ function ChatPanel({ messages, onSend, onEditMessage, onRetryMessage, onRunComma
 
   const formatReadableDate = (isoStr) => {
     const d = new Date(isoStr);
-    return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    return `${days[d.getDay()]}, ${months[d.getMonth()]} ${d.getDate()}, ${hh}:${mm}`;
+  };
+
+  const formatTime = (d) => {
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    return `${hh}:${mm}`;
   };
 
   const handleCalendarConfirm = () => {
@@ -1558,11 +1568,16 @@ function ChatPanel({ messages, onSend, onEditMessage, onRetryMessage, onRunComma
     const start = new Date(calendarDateTime);
     const end = new Date(start.getTime() + calendarDuration * 60000);
     const readable = formatReadableDate(calendarDateTime);
-    const endReadable = end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-    const finalText = `Schedule: ${calendarMessage} — ${readable} to ${endReadable} (start: ${start.toISOString()}, end: ${end.toISOString()})`;
+    const endTime = formatTime(end);
+    // ISO for the scheduler to parse, readable for the user
+    const isoStart = start.toISOString();
+    const isoEnd = end.toISOString();
+    const localStart = `${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}T${formatTime(start)}`;
+    const localEnd = `${end.getFullYear()}-${String(end.getMonth()+1).padStart(2,'0')}-${String(end.getDate()).padStart(2,'0')}T${formatTime(end)}`;
+    const finalText = `Schedule: ${calendarMessage}\n📅 ${readable} – ${endTime} (${calendarDuration} min)\nISO: ${localStart} → ${localEnd}`;
 
     // Show user message
-    const userMsg = { role: 'user', text: `/calendar ${calendarMessage}`, calendarInfo: { start: start.toISOString(), end: end.toISOString(), readable } };
+    const userMsg = { role: 'user', text: finalText, calendarInfo: { start: isoStart, end: isoEnd, readable } };
 
     // Close picker
     setShowCalendarPicker(false);
