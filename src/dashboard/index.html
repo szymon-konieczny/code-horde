@@ -2045,7 +2045,27 @@ function ChatPanel({ messages, onSend, onEditMessage, onRetryMessage, onRunComma
       }
 
       setCalendarDateTime(toDateTimeLocal(d));
-      setCalendarDuration(60);
+
+      // ── Parse duration from message ──
+      let dur = 60; // default 1h
+      // "1.5h", "2 hours", "0.5h"
+      const durH = msg.match(/(\d+(?:\.\d+)?)\s*h(?:ours?|r)?/i);
+      // "30m", "45 min", "90 minutes"
+      const durM = msg.match(/(\d+)\s*m(?:in(?:ut(?:e|y)?s?)?)?/i);
+      // "1h30m", "1h 30min"
+      const durHM = msg.match(/(\d+)\s*h\s*(\d+)\s*m/i);
+      if (durHM) {
+        dur = parseInt(durHM[1], 10) * 60 + parseInt(durHM[2], 10);
+      } else if (durH) {
+        dur = Math.round(parseFloat(durH[1]) * 60);
+      } else if (durM) {
+        dur = parseInt(durM[1], 10);
+      }
+      // Snap to nearest available option: 15, 30, 45, 60, 90, 120, 180
+      const opts = [15, 30, 45, 60, 90, 120, 180];
+      dur = opts.reduce((a, b) => Math.abs(b - dur) < Math.abs(a - dur) ? b : a);
+      setCalendarDuration(dur);
+
       setShowCalendarPicker(true);
       setInput('');
       return;
