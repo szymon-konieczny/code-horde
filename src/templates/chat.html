@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code Horde Chat</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a1a; color: #fff; }
+        .chat-container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; }
+        .chat-header { padding: 20px; border-bottom: 1px solid #333; background: #2a2a2a; }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 20px; }
+        .message { margin-bottom: 20px; padding: 15px; border-radius: 12px; max-width: 80%; }
+        .message.user { background: #0066cc; margin-left: auto; }
+        .message.agent { background: #333; }
+        .message.system { background: #444; font-style: italic; text-align: center; max-width: 100%; }
+        .message img { max-width: 100%; height: auto; border-radius: 8px; margin-top: 10px; }
+        .chat-input-container { padding: 20px; border-top: 1px solid #333; background: #2a2a2a; }
+        .chat-input-wrapper { position: relative; display: flex; gap: 10px; align-items: end; }
+        .chat-input { flex: 1; padding: 12px 15px; border: 1px solid #555; border-radius: 25px; background: #1a1a1a; color: #fff; resize: none; min-height: 44px; max-height: 120px; font-size: 16px; }
+        .chat-input:focus { outline: none; border-color: #0066cc; }
+        .send-button { padding: 12px 20px; background: #0066cc; color: white; border: none; border-radius: 25px; cursor: pointer; font-weight: 600; }
+        .send-button:hover { background: #0056b3; }
+        .send-button:disabled { background: #666; cursor: not-allowed; }
+        .image-preview { position: relative; display: inline-block; margin: 10px 0; }
+        .image-preview img { max-width: 200px; max-height: 200px; border-radius: 8px; }
+        .image-preview .remove-btn { position: absolute; top: -8px; right: -8px; background: #ff4444; color: white; border: none; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-size: 14px; }
+        .paste-hint { color: #888; font-size: 14px; margin-top: 5px; }
+        .typing-indicator { padding: 10px 15px; background: #333; border-radius: 12px; margin-bottom: 20px; max-width: 80%; }
+        .typing-dots { display: inline-flex; gap: 4px; }
+        .typing-dots span { width: 8px; height: 8px; background: #666; border-radius: 50%; animation: typing 1.4s infinite; }
+        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing { 0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); } 30% { opacity: 1; transform: scale(1); } }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>🤖 Code Horde Agent Chat</h1>
+            <p>Connected to multi-agent system</p>
+        </div>
+        
+        <div class="chat-messages" id="messages">
+            <div class="message system">
+                Welcome to Code Horde! You can paste images directly into the chat input.
+            </div>
+        </div>
+        
+        <div class="chat-input-container">
+            <div class="chat-input-wrapper">
+                <div style="flex: 1;">
+                    <textarea 
+                        id="messageInput" 
+                        class="chat-input" 
+                        placeholder="Type your message or paste an image..."
+                        rows="1"
+                    ></textarea>
+                    <div id="imagePreview"></div>
+                    <div class="paste-hint">💡 Tip: Copy an image and paste it here (Cmd+V)</div>
+                </div>
+                <button id="sendButton" class="send-button">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>

@@ -799,6 +799,142 @@ class BaseAgent(ABC):
             + "\n=== END PROJECT CONTEXT ===\n"
         )
 
+    # ── Conversation history → prompt ──────────────────────────────
+
+    # Threshold (in chars) above which we use RLM for history compression
+    _RLM_HISTORY_THRESHOLD = 3000
+
+    async def _build_prompt_with_history(
+        self,
+        message: str,
+        conversation_history: list[dict],
+        model_override: Optional[str] = None,
+    ) -> str:
+        """Build a prompt that includes conversation history.
+
+        Short histories (< _RLM_HISTORY_THRESHOLD chars) are embedded
+        verbatim.  Longer ones are compressed through the RLM engine
+        which partitions the history and recursively extracts the
+        context relevant to the current message.
+
+        Args:
+            message: The current user message.
+            conversation_history: Prior messages ``[{role, text, agent?}]``.
+            model_override: Optional model override forwarded to RLM client.
+
+        Returns:
+            Full prompt string ready for the LLM.
+        """
+        if not conversation_history:
+            return message
+
+        # Format raw history into a transcript
+        history_lines: list[str] = []
+        for msg in conversation_history:
+            role = msg.get("role", "user")
+            text = (msg.get("text") or "").strip()
+            if not text:
+                continue
+            agent_label = msg.get("agent", "")
+            if role == "assistant" and agent_label:
+                history_lines.append(f"Assistant ({agent_label}): {text}")
+            elif role == "user":
+                history_lines.append(f"User: {text}")
+            else:
+                history_lines.append(f"{role.title()}: {text}")
+
+        if not history_lines:
+            return message
+
+        history_text = "\n".join(history_lines)
+
+        # ── Short history → embed directly ────────────────────────
+        if len(history_text) <= self._RLM_HISTORY_THRESHOLD:
+            # Truncate individual messages that are excessively long
+            short_lines: list[str] = []
+            for line in history_lines:
+                if len(line) > 600:
+                    short_lines.append(line[:600] + "…")
+                else:
+                    short_lines.append(line)
+            return (
+                f"[Conversation history]\n"
+                + "\n".join(short_lines)
+                + f"\n\n[Current message]\n{message}"
+            )
+
+        # ── Long history → compress via RLM engine ────────────────
+        try:
+            from src.models.rlm_engine import RLMEngine, RLMConfig
+
+            rlm = RLMEngine(RLMConfig(
+                max_recursion_depth=2,
+                chunk_size=2048,
+                chunk_overlap=256,
+                partition_strategy="semantic",
+                temperature=0.2,
+                subquery_max_tokens=512,
+                answer_max_tokens=800,
+            ))
+
+            context_id = await rlm.load_context(
+                history_text,
+                metadata={"source": "conversation_history"},
+            )
+
+            # Get the first available LLM client for RLM sub-queries
+            providers = self._get_llm_providers()
+            if model_override:
+                providers = self._resolve_model_override(model_override, providers)
+
+            model_client = None
+            for pname, pkey, pmodel in providers:
+                try:
+                    model_client = self._create_llm_client(pname, pkey, model_override=pmodel)
+                    break
+                except Exception:
+                    continue
+
+            if model_client is None:
+                # Fallback: truncated direct embed
+                truncated = history_text[:self._RLM_HISTORY_THRESHOLD] + "…"
+                return (
+                    f"[Conversation history (truncated)]\n{truncated}\n\n"
+                    f"[Current message]\n{message}"
+                )
+
+            query = await rlm.recursive_query(
+                question=(
+                    f"Summarise the conversation context relevant to answering "
+                    f"the user's latest message: \"{message}\". "
+                    f"Include key decisions, requests, and any information the "
+                    f"user expects you to remember."
+                ),
+                context_id=context_id,
+                model_client=model_client,
+            )
+
+            compressed = (query.answer or "").strip()
+            if compressed:
+                return (
+                    f"[Conversation context — summarised by RLM]\n{compressed}\n\n"
+                    f"[Current message]\n{message}"
+                )
+
+        except Exception as exc:
+            await self._logger.awarning(
+                "rlm_history_compression_failed",
+                agent_id=self.identity.id,
+                error=str(exc)[:300],
+            )
+
+        # Final fallback: tail of raw history
+        tail = history_text[-self._RLM_HISTORY_THRESHOLD:]
+        return (
+            f"[Conversation history (recent)]\n…{tail}\n\n"
+            f"[Current message]\n{message}"
+        )
+
     async def _handle_chat_message(self, task: dict[str, Any]) -> dict[str, Any]:
         """Handle a free-form chat message using LLM.
 
@@ -914,6 +1050,8 @@ class BaseAgent(ABC):
             f"For complex questions, structure your response with clear sections. "
             f"Show your reasoning when it helps the user understand.\n\n"
             f"Respond helpfully and concisely to the user's message. "
+            f"If the message includes [Conversation history], use it to maintain context across turns. "
+            f"Refer to what was discussed earlier when relevant — the user expects continuity. "
             f"When project agent instructions are provided (AGENTS.md), ALWAYS follow those rules. "
             f"When project files are provided, always reference specific details from them. "
             f"Prefer project-specific information over generic advice. "
@@ -953,8 +1091,22 @@ class BaseAgent(ABC):
             if not content_blocks:
                 content_blocks = None
 
+        # Build the full prompt with conversation history for multi-turn context
+        conversation_history = task_payload.get("conversation_history") or []
+        try:
+            full_prompt = await self._build_prompt_with_history(
+                message, conversation_history, model_override
+            )
+        except Exception as hist_exc:
+            await self._logger.awarning(
+                "history_prompt_build_failed",
+                agent_id=self.identity.id,
+                error=str(hist_exc)[:200],
+            )
+            full_prompt = message  # Fallback: just the current message
+
         llm_request = LLMRequest(
-            prompt=message,
+            prompt=full_prompt,
             system_prompt=system_prompt,
             attachments=content_blocks,
             model_preference=ModelTier.FAST,

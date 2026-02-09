@@ -604,6 +604,43 @@ def create_app() -> FastAPI:
         if conv_store and conversation_id:
             await conv_store.add_message(conversation_id, "user", message)
 
+        # Load conversation history with token-budget-aware sliding window
+        conversation_history: list[dict] = []
+        try:
+            if conv_store and conversation_id:
+                conv = await conv_store.get_conversation(conversation_id)
+                if conv and conv.get("messages"):
+                    # Exclude the message we just added — it's the current prompt
+                    all_msgs = conv["messages"]
+                    history_msgs = all_msgs[:-1] if all_msgs else []
+
+                    if history_msgs:
+                        # Token budget: ~3000 chars ≈ 750 tokens for history
+                        _MAX_HISTORY_CHARS = 3000
+                        _MAX_MESSAGES = 20
+
+                        # Walk backwards from most recent, accumulating within budget
+                        selected: list[dict] = []
+                        total_chars = 0
+                        for msg in reversed(history_msgs[-_MAX_MESSAGES:]):
+                            msg_len = len(msg.get("text", ""))
+                            if total_chars + min(msg_len, 600) > _MAX_HISTORY_CHARS and selected:
+                                break  # Budget exhausted (always include at least 1)
+                            selected.append(msg)
+                            total_chars += min(msg_len, 600)
+
+                        # If we skipped older messages, prepend a compact summary marker
+                        skipped = len(history_msgs) - len(selected)
+                        selected.reverse()  # Restore chronological order
+                        if skipped > 0:
+                            selected.insert(0, {
+                                "role": "system",
+                                "text": f"[{skipped} earlier messages omitted]",
+                            })
+                        conversation_history = selected
+        except Exception as hist_exc:
+            await logger.awarning("conversation_history_load_failed", error=str(hist_exc)[:200])
+
         orchestrator = _app_state.get("orchestrator")
         task_manager = _app_state.get("task_manager")
 
@@ -656,6 +693,10 @@ def create_app() -> FastAPI:
                 task_payload["project_dir"] = project_dir
             if validated_attachments:
                 task_payload["attachments"] = validated_attachments
+
+            # Inject conversation history so agent has multi-turn context
+            if conversation_history:
+                task_payload["conversation_history"] = conversation_history
 
             # Inject resolved URL context so the agent can reference it
             if url_context_parts:

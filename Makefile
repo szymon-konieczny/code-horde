@@ -158,7 +158,15 @@ db-reset: ## Reset database (WARNING: destroys all data)
 venv: ## Create Python virtual environment
 	@if [ ! -d "$(VENV)" ]; then \
 		echo "Creating virtual environment..."; \
-		python3 -m venv $(VENV); \
+		CHOSEN_PYTHON=""; \
+		if [ "$$(uname -m)" = "arm64" ]; then \
+			for bp in /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3; do \
+				if [ -x "$$bp" ]; then CHOSEN_PYTHON="$$bp"; break; fi; \
+			done; \
+		fi; \
+		if [ -z "$$CHOSEN_PYTHON" ]; then CHOSEN_PYTHON=python3; fi; \
+		echo "Using $$CHOSEN_PYTHON ($$($$CHOSEN_PYTHON --version))"; \
+		$$CHOSEN_PYTHON -m venv $(VENV); \
 		echo "Virtual environment created at $(VENV)"; \
 	else \
 		echo "Virtual environment already exists."; \

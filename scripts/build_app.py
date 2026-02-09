@@ -163,9 +163,16 @@ def create_launcher(macos_dir: str) -> str:
     """Create the shell script that launches the Python app."""
     launcher_path = os.path.join(macos_dir, APP_NAME)
 
+    # Resolve the Python binary at build time so we can embed it as a fallback
+    venv_python = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
+    resolved_python = ""
+    if os.path.exists(venv_python):
+        resolved_python = os.path.realpath(venv_python)
+        print(f"  Build-time Python resolved: {resolved_python}")
+
     # Resolve paths relative to the .app bundle
     # NOTE: we write a plain string (no f-string) so shell $(...) is not
-    # mangled by Python.  Only PROJECT_ROOT is injected via .replace().
+    # mangled by Python.  Only PROJECT_ROOT / RESOLVED_PYTHON are injected.
     script = textwrap.dedent("""\
         #!/bin/bash
         # Code Horde — macOS app launcher
@@ -177,6 +184,15 @@ def create_launcher(macos_dir: str) -> str:
         echo "=== Code Horde launch $(date) ==="
 
         SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+        # ── Force native architecture on Apple Silicon ──
+        # If this .app is accidentally launched under Rosetta, re-exec natively.
+        HW_ARCH=$(sysctl -n hw.optional.arm64 2>/dev/null)
+        CURR_ARCH=$(uname -m)
+        if [ "$HW_ARCH" = "1" ] && [ "$CURR_ARCH" = "x86_64" ]; then
+            echo "Detected Rosetta — re-launching as arm64..."
+            exec arch -arm64 "$0" "$@"
+        fi
 
         # Project root baked in at build time
         PROJECT_ROOT="__PROJECT_ROOT__"
@@ -191,12 +207,81 @@ def create_launcher(macos_dir: str) -> str:
 
         echo "PROJECT_ROOT=$PROJECT_ROOT"
 
+        # ── Python resolution with architecture validation ──
+        SYS_ARCH=$(uname -m)
         VENV="$PROJECT_ROOT/.venv"
-        PYTHON="$VENV/bin/python"
+        PYTHON=""
 
-        if [ ! -f "$PYTHON" ]; then
-            echo "ERROR: venv not found at $VENV"
-            osascript -e "display dialog \\"Code Horde virtual environment not found at:\\n$VENV\\n\\nRun:  make setup\\" with title \\"Code Horde\\" buttons {\\"OK\\"} default button \\"OK\\" with icon caution"
+        check_python_arch() {
+            # Validate that a Python binary matches the current architecture.
+            # Returns 0 (success) if compatible, 1 if not.
+            local candidate="$1"
+            [ ! -x "$candidate" ] && return 1
+
+            # Resolve symlinks to get the real binary (macOS readlink has no -f)
+            local resolved
+            resolved=$(python3 -c "import os; print(os.path.realpath('$candidate'))" 2>/dev/null || realpath "$candidate" 2>/dev/null || echo "$candidate")
+            local file_info
+            file_info=$(file "$resolved" 2>/dev/null)
+
+            echo "  Checking $candidate -> $resolved"
+            echo "    file: $file_info"
+
+            # Universal binary is always OK
+            echo "$file_info" | grep -q "universal" && return 0
+
+            # Match specific architecture
+            if [ "$SYS_ARCH" = "arm64" ]; then
+                echo "$file_info" | grep -q "arm64" && return 0
+            else
+                echo "$file_info" | grep -q "x86_64" && return 0
+            fi
+            return 1
+        }
+
+        echo "System arch: $SYS_ARCH"
+
+        # Priority 1: venv Python
+        if [ -x "$VENV/bin/python" ]; then
+            if check_python_arch "$VENV/bin/python"; then
+                PYTHON="$VENV/bin/python"
+                echo "Using venv Python: $PYTHON"
+            else
+                echo "WARNING: venv Python architecture mismatch ($SYS_ARCH)"
+            fi
+        fi
+
+        # Priority 2: Homebrew Python (arm64 native on Apple Silicon)
+        if [ -z "$PYTHON" ] && [ "$SYS_ARCH" = "arm64" ]; then
+            for brew_py in /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3; do
+                if [ -x "$brew_py" ]; then
+                    if check_python_arch "$brew_py"; then
+                        # Use Homebrew Python but with the venv's site-packages
+                        PYTHON="$brew_py"
+                        export VIRTUAL_ENV="$VENV"
+                        export PYTHONPATH="$VENV/lib/python3.12/site-packages:$VENV/lib/python3.13/site-packages:$PROJECT_ROOT"
+                        echo "Using Homebrew Python: $PYTHON (with venv site-packages)"
+                        break
+                    fi
+                fi
+            done
+        fi
+
+        # Priority 3: Build-time resolved Python path
+        BUILD_PYTHON="__RESOLVED_PYTHON__"
+        if [ -z "$PYTHON" ] && [ -n "$BUILD_PYTHON" ] && [ -x "$BUILD_PYTHON" ]; then
+            if check_python_arch "$BUILD_PYTHON"; then
+                PYTHON="$BUILD_PYTHON"
+                export VIRTUAL_ENV="$VENV"
+                export PYTHONPATH="$VENV/lib/python3.12/site-packages:$VENV/lib/python3.13/site-packages:$PROJECT_ROOT"
+                echo "Using build-time Python: $PYTHON"
+            fi
+        fi
+
+        if [ -z "$PYTHON" ]; then
+            echo "ERROR: No compatible Python ($SYS_ARCH) found"
+            echo "  Checked: $VENV/bin/python, Homebrew, build-time path"
+            osascript -e "display dialog \\"No compatible Python found for $SYS_ARCH.\\n\\nFix: recreate the virtualenv:\\n  rm -rf .venv && make venv deps\\" with title \\"Code Horde\\" buttons {\\"OK\\"} default button \\"OK\\" with icon caution"
             exit 1
         fi
 
@@ -225,7 +310,8 @@ def create_launcher(macos_dir: str) -> str:
             echo "ERROR: app exited with code $EXIT_CODE"
             osascript -e "display dialog \\"Code Horde crashed (exit code $EXIT_CODE).\\n\\nCheck log: $LOG\\" with title \\"Code Horde\\" buttons {\\"OK\\"} default button \\"OK\\" with icon caution"
         fi
-    """).replace("__PROJECT_ROOT__", PROJECT_ROOT)
+    """).replace("__PROJECT_ROOT__", PROJECT_ROOT
+    ).replace("__RESOLVED_PYTHON__", resolved_python)
 
     with open(launcher_path, "w") as f:
         f.write(script)
@@ -259,6 +345,8 @@ def create_info_plist(contents_dir: str, icon_name: str) -> str:
         "NSAppTransportSecurity": {
             "NSAllowsLocalNetworking": True,
         },
+        # Prefer arm64 (Apple Silicon native) over x86_64 (Rosetta)
+        "LSArchitecturePriority": ["arm64", "x86_64"],
     }
 
     with open(plist_path, "wb") as f:
