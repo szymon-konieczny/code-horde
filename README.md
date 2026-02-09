@@ -1,6 +1,6 @@
 # Code Horde
 
-Secure multi-agent AI system for autonomous SaaS development and security monitoring.
+Self-hosted multi-agent AI platform for agentic development and security operations.
 
 ---
 

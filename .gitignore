@@ -25,6 +25,13 @@ ENV/
 keys/
 *.pem
 
+# ── Confidential documents ────────────────────────────────────
+AgentArmy_Commercialization_Plan.pdf
+
+# ── Local data ────────────────────────────────────────────────
+.codehorde/
+.agentarmy/
+
 # ── Node.js ────────────────────────────────────────────────────
 node_modules/
 package-lock.json
