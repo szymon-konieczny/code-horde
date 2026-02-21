@@ -1,10 +1,16 @@
-"""Research agent for technology research and competitive analysis."""
+"""Research agent for technology research and competitive analysis.
+
+Equipped with web research capabilities (search + page fetching) so it can
+gather live information from the internet when LLM training data is
+insufficient.
+"""
 
 from datetime import datetime, timezone
 from typing import Any
 
 import structlog
 
+from src.bridges.web_research import WebResearcher
 from src.core.agent_base import AgentCapability, AgentIdentity, AgentState, BaseAgent
 
 logger = structlog.get_logger(__name__)
@@ -85,12 +91,23 @@ class ScoutAgent(BaseAgent):
                         "include_recommendations": "bool",
                     },
                 ),
+                AgentCapability(
+                    name="web_research",
+                    version="1.0.0",
+                    description="Search the web and fetch pages for live information",
+                    parameters={
+                        "query": "str",
+                        "urls": "list[str]",
+                        "max_pages": "int",
+                    },
+                ),
             ],
         )
         super().__init__(identity)
         self._research_findings = []
         self._monitored_advisories = []
         self._competitive_analyses = []
+        self._web = WebResearcher()
 
     async def startup(self) -> None:
         """Initialize research agent.
@@ -127,7 +144,17 @@ class ScoutAgent(BaseAgent):
             "You are a technology research analyst specializing in evaluating "
             "emerging technologies, monitoring security advisories, performing "
             "competitive analysis, and synthesizing technical research into "
-            "actionable recommendations."
+            "actionable recommendations.\n\n"
+            "## WEB RESEARCH CAPABILITY\n"
+            "You have live access to the internet. When the user asks about "
+            "current events, latest versions, documentation, pricing, or any "
+            "information that may be newer than your training data:\n"
+            "1. Search the web for relevant information\n"
+            "2. Fetch and read the most relevant pages\n"
+            "3. Synthesize findings into your response with source URLs\n\n"
+            "Your web research is automatic — when you process a chat message, "
+            "the system will search for relevant web content and include it in "
+            "your context. You can also request specific URLs to be fetched.\n"
         )
 
     async def process_task(self, task: dict[str, Any]) -> dict[str, Any]:
@@ -170,9 +197,12 @@ class ScoutAgent(BaseAgent):
                 result = await self._handle_competitive_analysis(task)
             elif task_type == "research_summary":
                 result = await self._handle_research_summary(task)
+            elif task_type == "web_research":
+                result = await self._handle_web_research(task)
             else:
                 # Free-form chat or unknown task → LLM conversational response
-                return await self._handle_chat_message(task)
+                # Enrich with web research before sending to LLM
+                return await self._handle_chat_with_web(task)
             result["reasoning"] = reasoning.to_audit_dict()
             return result
         except Exception as exc:
@@ -538,3 +568,141 @@ class ScoutAgent(BaseAgent):
                 "report_format": report_format,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
+    # ── Web research handlers ─────────────────────────────────────
+
+    async def _handle_web_research(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Handle explicit web_research task type.
+
+        Searches the web and/or fetches specific URLs, then returns
+        structured results for downstream processing.
+        """
+        context = task.get("context", {})
+        query = context.get("query", "")
+        urls: list[str] = context.get("urls", [])
+        max_pages = context.get("max_pages", 3)
+
+        results: dict[str, Any] = {"status": "completed"}
+
+        if query:
+            research = await self._web.research(query, max_pages=max_pages)
+            results["search_results"] = research.get("results", [])
+            results["pages"] = research.get("pages", [])
+            await logger.ainfo(
+                "scout_web_search",
+                query=query[:100],
+                results_count=len(results["search_results"]),
+            )
+
+        if urls:
+            import asyncio
+            fetched = await asyncio.gather(
+                *[self._web.fetch_page(u) for u in urls[:5]],
+                return_exceptions=True,
+            )
+            results["fetched_pages"] = [
+                p.to_dict() if hasattr(p, "to_dict") else {"error": str(p)}
+                for p in fetched
+            ]
+            await logger.ainfo(
+                "scout_web_fetch",
+                urls_count=len(urls),
+                fetched_count=len(results["fetched_pages"]),
+            )
+
+        results["timestamp"] = datetime.now(timezone.utc).isoformat()
+        return results
+
+    async def _handle_chat_with_web(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Enhanced chat handler that enriches context with live web data.
+
+        1. Analyses the user's message to decide if web research is needed.
+        2. If yes — searches and fetches relevant pages.
+        3. Injects the web findings into the task payload as extra context.
+        4. Delegates to the standard ``_handle_chat_message`` LLM flow.
+        """
+        description = task.get("description", "")
+        payload = task.get("payload", {}) or {}
+
+        # Heuristic: decide if web research would help
+        needs_web = self._should_research_web(description)
+
+        if needs_web:
+            await logger.ainfo("scout_auto_web_research", query=description[:100])
+            try:
+                research = await self._web.research(description, max_pages=3)
+                web_context = self._format_web_context(research)
+                if web_context:
+                    # Inject into the payload so _handle_chat_message sees it
+                    existing = payload.get("url_context", "")
+                    payload["url_context"] = (
+                        existing + "\n\n" + web_context if existing else web_context
+                    )
+                    task["payload"] = payload
+            except Exception as exc:
+                await logger.awarning(
+                    "scout_web_research_failed",
+                    error=str(exc)[:200],
+                )
+
+        return await self._handle_chat_message(task)
+
+    @staticmethod
+    def _should_research_web(message: str) -> bool:
+        """Heuristic to decide if a message benefits from web research."""
+        msg_lower = message.lower()
+
+        # Explicit web research triggers
+        triggers = [
+            "search", "find", "look up", "latest", "current", "today",
+            "newest", "recent", "2024", "2025", "2026",
+            "how to", "tutorial", "documentation", "docs",
+            "what is", "who is", "compare", "vs",
+            "price", "pricing", "cost",
+            "download", "install", "setup guide",
+            "release", "version", "changelog",
+            "wyszukaj", "znajdź", "sprawdź", "najnowsz", "aktualn",
+            "porównaj", "cennik", "cena",
+        ]
+        if any(t in msg_lower for t in triggers):
+            return True
+
+        # URLs in message suggest web context
+        if "http://" in message or "https://" in message or "www." in message:
+            return True
+
+        # Questions about specific products/services
+        if "?" in message and len(message) > 30:
+            return True
+
+        return False
+
+    @staticmethod
+    def _format_web_context(research: dict[str, Any]) -> str:
+        """Format web research results into agent-readable context."""
+        parts: list[str] = []
+
+        results = research.get("results", [])
+        if results:
+            parts.append("--- WEB SEARCH RESULTS ---")
+            for i, r in enumerate(results[:5], 1):
+                parts.append(f"{i}. [{r.get('title', 'Untitled')}]({r.get('url', '')})")
+                if r.get("snippet"):
+                    parts.append(f"   {r['snippet'][:200]}")
+
+        pages = research.get("pages", [])
+        if pages:
+            parts.append("\n--- FETCHED PAGE CONTENT ---")
+            for p in pages[:3]:
+                if p.get("error"):
+                    continue
+                title = p.get("title", "Untitled")
+                text = p.get("text", "")[:3000]
+                if text:
+                    parts.append(f"\n### {title} ({p.get('url', '')})")
+                    parts.append(text)
+
+        if parts:
+            parts.append("--- END WEB RESEARCH ---")
+
+        return "\n".join(parts)

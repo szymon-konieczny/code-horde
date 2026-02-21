@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from src.core.reasoning import ChainOfThoughtEngine, ReasoningChain, ReasoningStrategy
+    from src.core.skills import SkillDefinition, SkillRegistry
+    from src.security.ed25519_keys import Ed25519KeyPair
 
 logger = structlog.get_logger(__name__)
 
@@ -127,6 +129,10 @@ class BaseAgent(ABC):
         # References for inter-agent task creation — set by the orchestrator
         self._task_manager: Any = None
         self._orchestrator: Any = None
+        # Ed25519 key pair — set during startup via key manager
+        self._key_pair: Optional["Ed25519KeyPair"] = None
+        # Skill registry — set by the orchestrator / main startup
+        self._skill_registry: Optional["SkillRegistry"] = None
 
     @property
     def state(self) -> AgentState:
@@ -241,15 +247,163 @@ class BaseAgent(ABC):
         """Return agent-specific system context for LLM reasoning.
 
         Override in subclasses to provide role-specific context.
+        Includes skill tags when skills are loaded from the registry.
 
         Returns:
             System context string describing the agent's expertise.
         """
-        caps = ", ".join(cap.name for cap in self.identity.capabilities)
+        from src.core.skills import SkillDefinition
+
+        parts: list[str] = []
+        for cap in self.identity.capabilities:
+            label = cap.name
+            if isinstance(cap, SkillDefinition) and cap.tags:
+                label += f" [{', '.join(cap.tags)}]"
+            parts.append(label)
+
+        caps = ", ".join(parts) if parts else "none"
         return (
             f"Your capabilities include: {caps}. "
             f"Security level: {self.identity.security_level}/5."
         )
+
+    def _get_delegation_context(self) -> str:
+        """Build a prompt section listing other agents and their skills.
+
+        Allows the LLM to decide whether to delegate part of the task
+        to a more suitable agent.  Returns an empty string when the
+        orchestrator is not wired (e.g. in tests).
+        """
+        if not self._orchestrator:
+            return ""
+
+        try:
+            peers = self._orchestrator.discover_agents_with_skills(
+                exclude_agent_id=self.identity.id,
+            )
+        except Exception:
+            return ""
+
+        if not peers:
+            return ""
+
+        lines = [
+            "\n## TEAM — OTHER AGENTS YOU CAN DELEGATE TO",
+            "You are part of a multi-agent team. If a task requires skills "
+            "you don't have, delegate it instead of guessing.\n",
+            "| Agent | Role | Key skills |",
+            "|-------|------|------------|",
+        ]
+        for identity, skills in peers:
+            skill_names = [s.name for s in skills[:6]]
+            lines.append(
+                f"| {identity.name} ({identity.id}) | {identity.role} "
+                f"| {', '.join(skill_names)} |"
+            )
+
+        lines.append(
+            "\n**How to delegate:** Include a fenced block at the END of your "
+            "response (after your own commentary):\n"
+            "```delegate\n"
+            '{"to_capability": "<skill_name>", '
+            '"description": "<what the subtask should accomplish>", '
+            '"wait": true}\n'
+            "```\n"
+            "Rules:\n"
+            "- `to_capability` must match one of the skills listed above.\n"
+            "- `description` should be a self-contained instruction for the specialist.\n"
+            "- Include any data the specialist needs (file paths, IDs, user requirements).\n"
+            "- You may include multiple delegate blocks if several subtasks are needed.\n"
+            "- If you CAN handle the task yourself, do NOT delegate — just answer.\n"
+        )
+        return "\n".join(lines)
+
+    async def _try_delegate_from_response(
+        self,
+        response_text: str,
+        parent_task_id: Optional[str] = None,
+    ) -> str:
+        """Parse ``delegate`` blocks from an LLM response and execute them.
+
+        If the response contains one or more fenced ``delegate`` blocks,
+        each is executed as a subtask via :meth:`create_subtask`.  The
+        delegate blocks are replaced by the subtask results in the
+        returned string.
+
+        Args:
+            response_text: Raw LLM response that may contain delegate blocks.
+            parent_task_id: Optional parent task ID for lineage.
+
+        Returns:
+            The response text with delegate blocks replaced by subtask
+            results (or the original text unchanged if no blocks found).
+        """
+        import json as _json
+        import re as _re
+
+        pattern = _re.compile(r"```delegate\s*\n(.*?)\n```", _re.DOTALL)
+        matches = list(pattern.finditer(response_text))
+        if not matches:
+            return response_text
+
+        result_text = response_text
+        for match in reversed(matches):  # Reverse to preserve offsets
+            block = match.group(1).strip()
+            try:
+                data = _json.loads(block)
+            except _json.JSONDecodeError:
+                continue
+
+            capability = data.get("to_capability", "")
+            description = data.get("description", "")
+            wait = data.get("wait", True)
+
+            if not capability or not description:
+                continue
+
+            await self._logger.ainfo(
+                "delegation_triggered",
+                agent_id=self.identity.id,
+                to_capability=capability,
+                description=description[:100],
+            )
+
+            try:
+                sub_result = await self.create_subtask(
+                    description=description,
+                    required_capabilities=[capability],
+                    parent_task_id=parent_task_id,
+                    wait=wait,
+                    timeout=120.0,
+                )
+
+                status = sub_result.get("status", "unknown")
+                assigned = sub_result.get("assigned_agent", "none")
+
+                if status == "completed":
+                    inner = sub_result.get("result", {})
+                    inner_text = inner.get("response", str(inner))
+                    replacement = (
+                        f"\n\n---\n**Delegated to {assigned}** "
+                        f"(skill: `{capability}`):\n\n{inner_text}\n---\n"
+                    )
+                elif status == "unroutable":
+                    replacement = (
+                        f"\n\n> ⚠ No agent with skill `{capability}` is "
+                        f"available right now. Attempting to handle locally.\n"
+                    )
+                else:
+                    error = sub_result.get("error", status)
+                    replacement = (
+                        f"\n\n> ⚠ Delegation to `{capability}` {status}: {error}\n"
+                    )
+
+            except Exception as exc:
+                replacement = f"\n\n> ⚠ Delegation failed: {exc}\n"
+
+            result_text = result_text[:match.start()] + replacement + result_text[match.end():]
+
+        return result_text
 
     def _load_custom_instructions(self) -> dict[str, str]:
         """Load custom prepend/append instructions from agent config YAML.
@@ -280,6 +434,120 @@ class BaseAgent(ABC):
             pass  # Non-critical — agent works without custom instructions
 
         return result
+
+    async def load_skills_from_yaml(self, config_path: Optional[pathlib.Path] = None) -> bool:
+        """Load skills from the agent's YAML config file.
+
+        When a ``skills:`` section is found the registry is populated and the
+        agent's :pyattr:`identity.capabilities` list is updated (YAML skills
+        override hardcoded entries with the same name).
+
+        If no YAML file is found or the ``skills:`` section is absent the
+        hardcoded capabilities remain untouched (backward compatibility).
+
+        Args:
+            config_path: Explicit path.  If ``None`` the standard
+                ``config/agents/{prefix}.yaml`` is used.
+
+        Returns:
+            ``True`` if at least one skill was loaded from YAML.
+        """
+        if self._skill_registry is None:
+            return False
+
+        if config_path is None:
+            prefix = self.identity.id.split("-")[0] if "-" in self.identity.id else self.identity.id
+            config_path = pathlib.Path("config/agents") / f"{prefix}.yaml"
+
+        if not config_path.exists():
+            # Register hardcoded capabilities as-is
+            self._register_hardcoded_skills()
+            return False
+
+        loaded_count, errors = self._skill_registry.load_agent_yaml(
+            self.identity.id, config_path
+        )
+
+        if errors:
+            for err in errors:
+                await self._logger.awarning("skill_load_error", agent_id=self.identity.id, error=err)
+
+        if loaded_count > 0:
+            # Merge: YAML skills override hardcoded ones with same name,
+            # hardcoded skills not in YAML are preserved.
+            yaml_skills = self._skill_registry.get_skills(self.identity.id)
+            yaml_names = {s.name for s in yaml_skills}
+
+            # Register remaining hardcoded skills that YAML didn't define
+            for cap in self.identity.capabilities:
+                if cap.name not in yaml_names:
+                    from src.core.skills import SkillDefinition
+
+                    sd = SkillDefinition(
+                        name=cap.name,
+                        version=cap.version,
+                        parameters=cap.parameters,
+                        description=cap.description,
+                        source="hardcoded",
+                    )
+                    self._skill_registry.register(self.identity.id, sd)
+
+            # Update identity.capabilities with the merged set
+            all_skills = self._skill_registry.get_skills(self.identity.id)
+            self.identity.capabilities = list(all_skills)  # SkillDefinition is-a AgentCapability
+
+            await self._logger.ainfo(
+                "skills_loaded_from_yaml",
+                agent_id=self.identity.id,
+                yaml_count=loaded_count,
+                total=len(self.identity.capabilities),
+            )
+            return True
+
+        # No skills section in YAML — keep hardcoded
+        self._register_hardcoded_skills()
+        return False
+
+    def _register_hardcoded_skills(self) -> None:
+        """Register the agent's hardcoded capabilities in the skill registry."""
+        if self._skill_registry is None:
+            return
+        from src.core.skills import SkillDefinition
+
+        for cap in self.identity.capabilities:
+            if isinstance(cap, SkillDefinition):
+                self._skill_registry.register(self.identity.id, cap)
+            else:
+                sd = SkillDefinition(
+                    name=cap.name,
+                    version=cap.version,
+                    parameters=cap.parameters,
+                    description=cap.description,
+                    source="hardcoded",
+                )
+                self._skill_registry.register(self.identity.id, sd)
+
+    async def refresh_skills(self) -> None:
+        """Reload skills from YAML without agent restart.
+
+        Clears the agent's skills in the registry and re-loads from YAML.
+        Falls back to hardcoded capabilities if loading fails.
+        """
+        if self._skill_registry is None:
+            return
+
+        self._skill_registry.clear_agent(self.identity.id)
+        success = await self.load_skills_from_yaml()
+
+        if not success:
+            # Fallback: re-register hardcoded capabilities
+            self._register_hardcoded_skills()
+
+        await self._logger.ainfo(
+            "skills_refreshed",
+            agent_id=self.identity.id,
+            total=len(self._skill_registry.get_skills(self.identity.id)),
+        )
 
     async def think(
         self,
@@ -995,6 +1263,11 @@ class BaseAgent(ABC):
         if memory_context:
             memory_context = f"\n\n{memory_context}\n"
 
+        # Gather recent terminal output so agent can reference it
+        terminal_context = task_payload.get("terminal_context", "")
+        if terminal_context:
+            terminal_context = f"\n\n--- RECENT TERMINAL OUTPUT ---\n{terminal_context}\n--- END TERMINAL OUTPUT ---\n"
+
         # Gather configured integrations context
         integrations_context = task_payload.get("integrations_context", "")
         if integrations_context:
@@ -1035,11 +1308,13 @@ class BaseAgent(ABC):
             f"Integration tokens (Figma, GitHub, Jira) are injected as environment variables when commands run. "
             f"Use `$FIGMA_TOKEN`, `$GITHUB_TOKEN`, `$JIRA_API_TOKEN`, `$JIRA_EMAIL`, `$JIRA_DOMAIN` in bash blocks. "
             f"NEVER use placeholder tokens like `<YOUR_FIGMA_TOKEN>` or `<YOUR_TOKEN>` — real tokens are already available.\n"
+            f"{self._get_delegation_context()}\n"
             f"{integrations_context}\n"
             f"{agent_instructions}\n"
             f"{memory_context}\n"
             f"{project_context}\n"
             f"{url_context}\n"
+            f"{terminal_context}\n"
             f"## REASONING APPROACH\n"
             f"Before answering, think through the problem systematically:\n"
             f"1. **Understand** — Identify what the user is really asking and the core requirements\n"
@@ -1172,6 +1447,20 @@ class BaseAgent(ABC):
                 f"**Provider errors:**\n{error_details}\n\n"
                 f"Please check your API keys in Settings or start Ollama for local inference."
             )
+
+        # ── Delegation: execute ```delegate blocks if present ─────
+        if response_text:
+            try:
+                task_id = task.get("id") or task.get("payload", {}).get("task_id")
+                response_text = await self._try_delegate_from_response(
+                    response_text, parent_task_id=task_id
+                )
+            except Exception as deleg_err:
+                await self._logger.awarning(
+                    "delegation_processing_failed",
+                    agent_id=self.identity.id,
+                    error=str(deleg_err)[:200],
+                )
 
         # ── Auto-execute bash blocks the agent produced ────────────
         project_dir = task.get("project_dir", "") or (
@@ -1641,26 +1930,36 @@ class BaseAgent(ABC):
             tasks_failed=self._task_count_failed,
         )
 
-    @staticmethod
     def _sign_audit_log(
+        self,
         data: str,
         status: str,
         secret: str = "default-secret",
     ) -> str:
-        """Sign audit log entry with HMAC-SHA256.
+        """Sign audit log entry with Ed25519 (preferred) or HMAC-SHA256 fallback.
+
+        When the agent has an Ed25519 key pair loaded, the signature is
+        produced with the agent's private key (``ed25519:<hex>``).
+        Otherwise falls back to HMAC-SHA256 with a shared secret.
 
         Args:
             data: Data to sign.
             status: Status being logged.
-            secret: Secret key for signing.
+            secret: Shared secret for HMAC fallback.
 
         Returns:
-            HMAC-SHA256 signature as hex string.
+            Signature string (prefixed with scheme identifier).
         """
-        message = f"{data}:{status}".encode()
-        signature = hmac.new(
+        payload = f"{data}:{status}".encode()
+
+        # Prefer Ed25519 asymmetric signature
+        if self._key_pair is not None:
+            sig_bytes = self._key_pair.sign(payload)
+            return f"ed25519:{sig_bytes.hex()}"
+
+        # Fallback to HMAC-SHA256 (dev / legacy)
+        return hmac.new(
             secret.encode(),
-            message,
+            payload,
             hashlib.sha256,
         ).hexdigest()
-        return signature

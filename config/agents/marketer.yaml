@@ -37,6 +37,34 @@ token_limits:
   max_tokens_per_request: 4000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  write_linkedin_post:
+    version: "1.0.0"
+    description: "Write an optimized LinkedIn post with hook, body, CTA and hashtags"
+    tags: ["content", "linkedin", "social-media"]
+    parameters:
+      topic: {type: "string", required: true}
+      tone: {type: "string"}
+  generate_post_image:
+    version: "1.0.0"
+    description: "Generate an AI image prompt and metadata for a LinkedIn post"
+    tags: ["content", "image", "social-media"]
+    parameters:
+      post_content: {type: "string", required: true}
+  create_content_package:
+    version: "1.0.0"
+    description: "Create complete LinkedIn content package: post + image"
+    tags: ["content", "linkedin", "package"]
+    parameters:
+      topic: {type: "string", required: true}
+  repurpose_content:
+    version: "1.0.0"
+    description: "Transform existing content into LinkedIn posts"
+    tags: ["content", "repurpose", "social-media"]
+    parameters:
+      source_content: {type: "string", required: true}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

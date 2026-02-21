@@ -37,6 +37,39 @@ token_limits:
   max_tokens_per_request: 8000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  research_technology:
+    version: "1.0.0"
+    description: "Research technology/library details"
+    tags: ["research", "technology", "discovery"]
+    parameters:
+      technology: {type: "string", required: true}
+  monitor_advisories:
+    version: "1.0.0"
+    description: "Monitor security advisories and updates"
+    tags: ["security", "monitoring", "advisories"]
+    parameters:
+      technologies: {type: "list[str]"}
+  competitive_analysis:
+    version: "1.0.0"
+    description: "Analyze competitive products/solutions"
+    tags: ["research", "competitive", "analysis"]
+    parameters:
+      competitors: {type: "list[str]"}
+  research_summary:
+    version: "1.0.0"
+    description: "Generate research summary report"
+    tags: ["research", "reporting"]
+    parameters:
+      research_topic: {type: "string", required: true}
+  web_research:
+    version: "1.0.0"
+    description: "Search the web and fetch pages for live information"
+    tags: ["research", "web", "browsing"]
+    parameters:
+      query: {type: "string", required: true}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

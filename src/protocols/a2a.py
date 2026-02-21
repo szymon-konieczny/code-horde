@@ -1,15 +1,23 @@
-"""Agent-to-Agent (A2A) communication protocol for secure inter-agent messaging."""
+"""Agent-to-Agent (A2A) communication protocol for secure inter-agent messaging.
+
+Uses Ed25519 asymmetric signatures so each agent signs with its own private
+key and any receiver can verify using the sender's public key.  Falls back to
+HMAC-SHA256 with a shared secret when no key manager is provided (dev mode).
+"""
 
 import hmac
 import hashlib
 import json
 from enum import Enum
 from datetime import datetime, timedelta
-from typing import Optional, Any, Callable, Awaitable
+from typing import Optional, Any, Callable, Awaitable, TYPE_CHECKING
 from uuid import uuid4
 
 import structlog
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from src.security.ed25519_keys import Ed25519KeyManager
 
 
 logger = structlog.get_logger(__name__)
@@ -52,7 +60,7 @@ class A2AMessage(BaseModel):
     )
     signature: Optional[str] = Field(
         default=None,
-        description="HMAC signature for verification",
+        description="Ed25519 or HMAC-SHA256 signature for verification",
     )
     correlation_id: Optional[str] = Field(
         default=None,
@@ -125,19 +133,25 @@ class A2AProtocol:
     def __init__(
         self,
         agent_id: str,
-        secret_key: str,
+        secret_key: str = "",
         message_ttl_seconds: int = 3600,
+        key_manager: Optional["Ed25519KeyManager"] = None,
     ) -> None:
         """Initialize A2A protocol handler.
 
         Args:
             agent_id: This agent's unique identifier.
-            secret_key: Secret key for signing/verifying messages.
+            secret_key: Shared secret for HMAC fallback (dev mode).
             message_ttl_seconds: How long messages are considered valid.
+            key_manager: Ed25519KeyManager for asymmetric signing.
+                When provided, messages are signed with the agent's Ed25519
+                private key and verified with the sender's public key.
+                Falls back to HMAC-SHA256 when ``None``.
         """
         self.agent_id = agent_id
         self.secret_key = secret_key
         self.message_ttl_seconds = message_ttl_seconds
+        self._key_manager: Optional["Ed25519KeyManager"] = key_manager
 
         # Capability registry
         self.capabilities: dict[str, A2ACapability] = {}
@@ -430,13 +444,8 @@ class A2AProtocol:
 
     # Private methods
 
-    def _sign_message(self, message: A2AMessage) -> None:
-        """Sign a message with HMAC.
-
-        Args:
-            message: Message to sign (signature field will be updated).
-        """
-        # Create payload to sign (all fields except signature)
+    def _canonical_payload(self, message: A2AMessage) -> bytes:
+        """Build the canonical byte string that gets signed / verified."""
         payload = {
             "protocol_version": message.protocol_version,
             "message_id": message.message_id,
@@ -447,22 +456,76 @@ class A2AProtocol:
             "timestamp": message.timestamp.isoformat(),
             "correlation_id": message.correlation_id,
         }
+        return json.dumps(payload, sort_keys=True).encode()
 
-        payload_str = json.dumps(payload, sort_keys=True)
+    # ── Ed25519 path ───────────────────────────────────────────────
 
+    def _sign_ed25519(self, message: A2AMessage) -> bool:
+        """Sign using the agent's Ed25519 private key. Returns True on success."""
+        assert self._key_manager is not None
+        pair = self._key_manager.get(self.agent_id)
+        if pair is None:
+            return False
+        sig_bytes = pair.sign(self._canonical_payload(message))
+        message.signature = "ed25519=" + sig_bytes.hex()
+        return True
+
+    def _verify_ed25519(self, message: A2AMessage) -> bool:
+        """Verify an Ed25519-prefixed signature using the sender's public key."""
+        assert self._key_manager is not None
+        sig_hex = message.signature[len("ed25519="):]  # type: ignore[index]
+        try:
+            sig_bytes = bytes.fromhex(sig_hex)
+        except ValueError:
+            return False
+        return self._key_manager.verify(
+            message.from_agent, sig_bytes, self._canonical_payload(message)
+        )
+
+    # ── HMAC-SHA256 fallback path ──────────────────────────────────
+
+    def _sign_hmac(self, message: A2AMessage) -> None:
+        """Sign using shared-secret HMAC-SHA256 (dev / legacy fallback)."""
         signature = (
             "sha256="
             + hmac.new(
                 self.secret_key.encode(),
-                payload_str.encode(),
+                self._canonical_payload(message),
                 hashlib.sha256,
             ).hexdigest()
         )
-
         message.signature = signature
+
+    def _verify_hmac(self, message: A2AMessage) -> bool:
+        """Verify an HMAC-SHA256 signature."""
+        expected = (
+            "sha256="
+            + hmac.new(
+                self.secret_key.encode(),
+                self._canonical_payload(message),
+                hashlib.sha256,
+            ).hexdigest()
+        )
+        return hmac.compare_digest(message.signature or "", expected)
+
+    # ── Unified sign / verify dispatchers ──────────────────────────
+
+    def _sign_message(self, message: A2AMessage) -> None:
+        """Sign a message with Ed25519 (preferred) or HMAC-SHA256 (fallback).
+
+        Args:
+            message: Message to sign (signature field will be updated).
+        """
+        if self._key_manager is not None and self._sign_ed25519(message):
+            return
+        # Fallback to HMAC
+        self._sign_hmac(message)
 
     def _verify_signature(self, message: A2AMessage) -> bool:
         """Verify a message's signature.
+
+        Automatically detects whether the signature uses Ed25519 or HMAC
+        based on the prefix (``ed25519=`` vs ``sha256=``).
 
         Args:
             message: Message to verify.
@@ -477,36 +540,25 @@ class A2AProtocol:
             )
             return False
 
-        # Recreate payload and calculate expected signature
-        payload = {
-            "protocol_version": message.protocol_version,
-            "message_id": message.message_id,
-            "from_agent": message.from_agent,
-            "to_agent": message.to_agent,
-            "type": message.type.value,
-            "payload": message.payload,
-            "timestamp": message.timestamp.isoformat(),
-            "correlation_id": message.correlation_id,
-        }
-
-        payload_str = json.dumps(payload, sort_keys=True)
-
-        expected_signature = (
-            "sha256="
-            + hmac.new(
-                self.secret_key.encode(),
-                payload_str.encode(),
-                hashlib.sha256,
-            ).hexdigest()
-        )
-
-        is_valid = hmac.compare_digest(message.signature, expected_signature)
+        is_valid: bool
+        if message.signature.startswith("ed25519="):
+            if self._key_manager is None:
+                logger.warning(
+                    "Ed25519 signature but no key manager",
+                    message_id=message.message_id,
+                    from_agent=message.from_agent,
+                )
+                return False
+            is_valid = self._verify_ed25519(message)
+        else:
+            is_valid = self._verify_hmac(message)
 
         if not is_valid:
             logger.warning(
-                "Signature mismatch",
+                "Signature verification failed",
                 message_id=message.message_id,
                 from_agent=message.from_agent,
+                scheme="ed25519" if message.signature.startswith("ed25519=") else "hmac",
             )
 
         return is_valid

@@ -299,6 +299,50 @@ scheduling:
       schedule: "0 4 * * *"
       action: "run_security_scan"
 
+# Skills and capabilities
+skills:
+  generate_code:
+    version: "1.0.0"
+    description: "Generate code based on task descriptions"
+    tags: ["code", "generation", "llm"]
+    parameters:
+      description: {type: "string", required: true}
+      language: {type: "string"}
+      framework: {type: "string"}
+      style_guide: {type: "string"}
+    security_level_required: 2
+  create_branch:
+    version: "1.0.0"
+    description: "Create and manage git branches"
+    tags: ["git", "vcs"]
+    parameters:
+      repository_path: {type: "string", required: true}
+      branch_name: {type: "string", required: true}
+      base_branch: {type: "string"}
+  write_tests:
+    version: "1.0.0"
+    description: "Generate unit and integration tests"
+    tags: ["testing", "quality", "code"]
+    parameters:
+      source_file: {type: "string", required: true}
+      test_framework: {type: "string"}
+  code_review:
+    version: "1.0.0"
+    description: "Perform automated code review"
+    tags: ["review", "quality", "security"]
+    parameters:
+      code_content: {type: "string", required: true}
+      review_type: {type: "string"}
+      style_checks: {type: "boolean"}
+  create_pr:
+    version: "1.0.0"
+    description: "Create pull requests with generated code"
+    tags: ["git", "vcs", "collaboration"]
+    parameters:
+      repository_path: {type: "string", required: true}
+      base_branch: {type: "string"}
+      title: {type: "string"}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

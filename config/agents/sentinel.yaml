@@ -235,6 +235,41 @@ threat_detection:
   auto_remediate: false
   quarantine_suspicious_files: true
 
+# Skills and capabilities
+skills:
+  dependency_check:
+    version: "1.0.0"
+    description: "Scan project dependencies for known vulnerabilities"
+    tags: ["security", "scanning", "dependencies"]
+    parameters:
+      repository_path: {type: "string", required: true}
+  secret_scan:
+    version: "1.0.0"
+    description: "Scan code for exposed secrets and credentials"
+    tags: ["security", "scanning", "secrets"]
+    parameters:
+      repository_path: {type: "string", required: true}
+  security_audit:
+    version: "1.0.0"
+    description: "Perform comprehensive security audit"
+    tags: ["security", "audit"]
+    parameters:
+      repository_path: {type: "string", required: true}
+      audit_type: {type: "string"}
+  generate_report:
+    version: "1.0.0"
+    description: "Generate security compliance and audit report"
+    tags: ["security", "reporting"]
+    parameters:
+      audit_results: {type: "dict", required: true}
+  whatsapp_alert:
+    version: "1.0.0"
+    description: "Send critical security alerts via WhatsApp"
+    tags: ["alerting", "whatsapp", "notification"]
+    parameters:
+      message: {type: "string", required: true}
+      severity: {type: "string"}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

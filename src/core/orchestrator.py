@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 import structlog
 from pydantic import BaseModel, Field
 
-from src.core.agent_base import AgentIdentity, AgentState, BaseAgent
+from src.core.agent_base import AgentCapability, AgentIdentity, AgentState, BaseAgent
 
 logger = structlog.get_logger(__name__)
 
@@ -127,6 +127,8 @@ class Orchestrator:
         self.whatsapp_webhook_url = whatsapp_webhook_url
         self._task_queue: asyncio.PriorityQueue[tuple[int, str]] = asyncio.PriorityQueue()
         self._logger = structlog.get_logger(__name__)
+        # Skill registry — set during startup for version-aware routing
+        self._skill_registry: Optional[Any] = None  # type: Optional[SkillRegistry]
 
     async def register_agent(self, agent: BaseAgent) -> None:
         """Register an agent with the orchestrator.
@@ -201,6 +203,41 @@ class Orchestrator:
             agents.append(agent.identity)
 
         return agents
+
+    def discover_agents_with_skills(
+        self,
+        exclude_agent_id: Optional[str] = None,
+    ) -> list[tuple[AgentIdentity, list[AgentCapability]]]:
+        """Discover available agents together with their skill lists.
+
+        Used by agents to build delegation-aware system prompts so the
+        LLM knows which other agents exist and what they can do.
+
+        Args:
+            exclude_agent_id: Agent to exclude (typically the caller).
+
+        Returns:
+            List of ``(identity, capabilities)`` tuples for every
+            healthy agent.
+        """
+        result: list[tuple[AgentIdentity, list[AgentCapability]]] = []
+
+        for agent in self.agents.values():
+            if agent.state in (AgentState.ERROR, AgentState.OFFLINE):
+                continue
+            if exclude_agent_id and agent.identity.id == exclude_agent_id:
+                continue
+
+            # Prefer registry (has tags/versions), fall back to identity
+            skills: list[AgentCapability]
+            if self._skill_registry is not None:
+                skills = list(self._skill_registry.get_skills(agent.identity.id))
+            if not skills:
+                skills = list(agent.identity.capabilities)
+
+            result.append((agent.identity, skills))
+
+        return result
 
     def create_task(
         self,
@@ -611,14 +648,23 @@ class Orchestrator:
 
         return health_report
 
-    def find_suitable_agent(self, task: Any) -> Optional[BaseAgent]:
+    def find_suitable_agent(
+        self,
+        task: Any,
+        version_constraints: Optional[dict[str, str]] = None,
+    ) -> Optional[BaseAgent]:
         """Find the best available agent for a given task.
 
         Picks the first IDLE agent that has all required capabilities.
         Falls back to any IDLE agent if no capabilities are specified.
 
+        When *version_constraints* is provided (mapping of capability name to
+        semver range like ``{"generate_code": ">=2.0.0"}``), the registry is
+        queried for version compatibility.
+
         Args:
             task: Task dict or Task object.
+            version_constraints: Optional per-capability version ranges.
 
         Returns:
             A suitable BaseAgent, or None if none available.
@@ -630,14 +676,33 @@ class Orchestrator:
         elif isinstance(task, dict):
             required_caps = task.get("required_capabilities", [])
 
+        # Merge version constraints from task payload if present
+        if version_constraints is None and isinstance(task, dict):
+            version_constraints = task.get("version_constraints")
+
         candidates = []
         for agent in self.agents.values():
             if agent.state in (AgentState.ERROR, AgentState.OFFLINE):
                 continue
+
+            # Capability presence check
             if required_caps and not all(
                 agent.has_capability(cap) for cap in required_caps
             ):
                 continue
+
+            # Version constraint check (requires skill registry)
+            if version_constraints and self._skill_registry is not None:
+                version_ok = True
+                for cap_name, ver_range in version_constraints.items():
+                    if not self._skill_registry.agent_has_skill_version(
+                        agent.identity.id, cap_name, ver_range
+                    ):
+                        version_ok = False
+                        break
+                if not version_ok:
+                    continue
+
             candidates.append(agent)
 
         if not candidates:
@@ -648,6 +713,41 @@ class Orchestrator:
             key=lambda a: (0 if a.state == AgentState.IDLE else 1, len(a.identity.capabilities)),
         )
         return candidates[0]
+
+    def validate_task_routing(self, task: Any) -> tuple[bool, list[str]]:
+        """Check whether a task can be routed to at least one agent.
+
+        Returns ``(routable, errors)`` where *errors* lists human-readable
+        reasons for routing failure.
+        """
+        required_caps: list[str] = []
+        if isinstance(task, Task):
+            required_caps = task.required_capabilities
+        elif isinstance(task, dict):
+            required_caps = task.get("required_capabilities", [])
+
+        if not required_caps:
+            return (True, [])
+
+        errors: list[str] = []
+        for cap_name in required_caps:
+            found = any(a.has_capability(cap_name) for a in self.agents.values())
+            if not found:
+                errors.append(f"No agent has capability: {cap_name!r}")
+
+        return (len(errors) == 0, errors)
+
+    def get_available_skills(self, agent_id: str) -> list[AgentCapability]:
+        """Return all skills for *agent_id* from the registry or identity."""
+        if self._skill_registry is not None:
+            skills = self._skill_registry.get_skills(agent_id)
+            if skills:
+                return list(skills)
+
+        agent = self.agents.get(agent_id)
+        if agent:
+            return list(agent.identity.capabilities)
+        return []
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get a task by ID.

@@ -46,7 +46,10 @@ from src.platform import detect_platform, get_desktop_adapter, get_calendar_adap
 from src.cluster import WorkerRegistry
 from src.storage import Database, RedisStore, InMemoryStore, Neo4jStore, InMemoryGraphStore, HypergraphStore, ConversationStore
 from src.storage.memory import AgentMemoryStore, MEMORY_TYPES, MEMORY_SCOPES
+from src.security.ed25519_keys import Ed25519KeyManager
+from src.core.skills import SkillRegistry
 from src.api.setup import router as setup_router
+from src.api.skills import router as skills_router, init_skills_api
 
 logger = structlog.get_logger(__name__)
 
@@ -254,6 +257,18 @@ async def startup() -> None:
 
         _app_state["agents"] = {agent.identity.id: agent for agent in agents}
 
+        # ── Load Ed25519 key pairs for per-agent signing ──────────
+        project_root = pathlib.Path(__file__).resolve().parent.parent
+        key_manager = Ed25519KeyManager(keys_dir=project_root / "keys")
+        for agent in agents:
+            pair = key_manager.load_or_generate(agent.identity.id)
+            agent._key_pair = pair
+        _app_state["key_manager"] = key_manager
+        await logger.ainfo(
+            "ed25519_keys_loaded",
+            agents=key_manager.registered_agents,
+        )
+
         # Register agents with orchestrator
         await logger.ainfo("registering_agents_with_orchestrator")
         for agent in agents:
@@ -263,6 +278,21 @@ async def startup() -> None:
         for agent in agents:
             agent._task_manager = task_manager
             agent._orchestrator = orchestrator
+
+        # ── Initialise Skill Registry ─────────────────────────────
+        skill_registry = SkillRegistry()
+        orchestrator._skill_registry = skill_registry
+        for agent in agents:
+            agent._skill_registry = skill_registry
+            await agent.load_skills_from_yaml()
+        _app_state["skill_registry"] = skill_registry
+        init_skills_api(skill_registry, _app_state["agents"])
+        await logger.ainfo(
+            "skill_registry_initialised",
+            total_skills=sum(
+                len(skill_registry.get_skills(a.identity.id)) for a in agents
+            ),
+        )
 
         # Initialize WhatsApp bridge if enabled and configured
         if settings.whatsapp_enabled:
@@ -518,6 +548,7 @@ def create_app() -> FastAPI:
 
     # ── Setup / Settings API ─────────────────────────────────────
     app.include_router(setup_router)
+    app.include_router(skills_router)
 
     # ── Dashboard UI ─────────────────────────────────────────────
     _dashboard_html: Optional[str] = None
@@ -558,6 +589,7 @@ def create_app() -> FastAPI:
         model_override = payload.get("model")  # e.g. "claude-sonnet-4-20250514"
         conversation_id = payload.get("conversation_id")
         raw_attachments: list[dict] = payload.get("attachments") or []
+        terminal_context: str = payload.get("terminal_context", "")
 
         if not message and not raw_attachments:
             raise HTTPException(status_code=400, detail="Message or attachments required")
@@ -708,6 +740,10 @@ def create_app() -> FastAPI:
                 memory_ctx = mem_store.format_for_agent_context(query=message, limit=15)
                 if memory_ctx:
                     task_payload["memory_context"] = memory_ctx
+
+            # Inject recent terminal output so the agent can reference it
+            if terminal_context:
+                task_payload["terminal_context"] = terminal_context
 
             # Inject configured integration info so agents know what's available
             integrations_ctx = _build_integrations_context()

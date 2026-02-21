@@ -3196,8 +3196,17 @@ const TerminalPanel = React.forwardRef(function TerminalPanel(props, ref) {
     }
   };
 
-  // Expose runCmd to parent via ref
-  React.useImperativeHandle(ref, () => ({ runCmd }));
+  // Expose runCmd + getHistory to parent via ref
+  React.useImperativeHandle(ref, () => ({
+    runCmd,
+    getHistory: () => {
+      const last = history.slice(-10);
+      let text = last.map(e =>
+        e.type === 'cmd' ? `$ ${e.text}` : e.text
+      ).join('\n');
+      return text.slice(-4000);
+    },
+  }));
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -4518,6 +4527,8 @@ function App() {
     try {
       const payload = { message: text, conversation_id: convId };
       if (model && model !== 'auto') payload.model = model;
+      const termCtx = terminalRef.current?.getHistory?.() || '';
+      if (termCtx) payload.terminal_context = termCtx;
       if (queuedAttachments?.length > 0) payload.attachments = queuedAttachments;
       const res = await api('/chat', {
         method: 'POST',

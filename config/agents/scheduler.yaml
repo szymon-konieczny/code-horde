@@ -38,6 +38,40 @@ token_limits:
   max_tokens_per_request: 4000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  read_calendar:
+    version: "1.0.0"
+    description: "Read events from macOS Calendar or Google Calendar"
+    tags: ["calendar", "scheduling"]
+    parameters:
+      source: {type: "string"}
+  find_free_time:
+    version: "1.0.0"
+    description: "Find available time slots across all calendars"
+    tags: ["calendar", "scheduling"]
+    parameters:
+      duration_minutes: {type: "int"}
+  create_event:
+    version: "1.0.0"
+    description: "Create a new calendar event"
+    tags: ["calendar", "scheduling", "creation"]
+    parameters:
+      target: {type: "string"}
+      title: {type: "string", required: true}
+  daily_agenda:
+    version: "1.0.0"
+    description: "Generate a merged daily schedule from all calendars"
+    tags: ["calendar", "scheduling", "reporting"]
+    parameters:
+      date: {type: "string"}
+  run_workflow:
+    version: "1.0.0"
+    description: "Execute a multi-step scheduling workflow"
+    tags: ["scheduling", "workflow"]
+    parameters:
+      template: {type: "string"}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

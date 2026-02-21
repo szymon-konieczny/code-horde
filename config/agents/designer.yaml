@@ -36,6 +36,28 @@ token_limits:
   max_tokens_per_request: 4000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  generate_social_image:
+    version: "1.0.0"
+    description: "Generate a social media image for a specific platform"
+    tags: ["design", "image", "social-media"]
+    parameters:
+      prompt: {type: "string", required: true}
+      platform: {type: "string"}
+  create_image_set:
+    version: "1.0.0"
+    description: "Generate images for multiple platforms from one concept"
+    tags: ["design", "image", "multi-platform"]
+    parameters:
+      prompt: {type: "string", required: true}
+  suggest_visuals:
+    version: "1.0.0"
+    description: "Recommend image concepts based on post content"
+    tags: ["design", "suggestion", "creative"]
+    parameters:
+      content: {type: "string", required: true}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

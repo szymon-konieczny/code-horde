@@ -37,6 +37,35 @@ token_limits:
   max_tokens_per_request: 8000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  deploy_docker:
+    version: "1.0.0"
+    description: "Deploy and manage Docker containers"
+    tags: ["deployment", "docker", "containers"]
+    parameters:
+      image: {type: "string", required: true}
+      tag: {type: "string"}
+  manage_pipeline:
+    version: "1.0.0"
+    description: "Manage CI/CD pipeline execution"
+    tags: ["ci-cd", "pipeline"]
+    parameters:
+      pipeline_name: {type: "string", required: true}
+      action: {type: "string"}
+  manage_config:
+    version: "1.0.0"
+    description: "Manage configuration and secrets"
+    tags: ["configuration", "secrets"]
+    parameters:
+      config_type: {type: "string", required: true}
+  infrastructure_health:
+    version: "1.0.0"
+    description: "Monitor infrastructure health"
+    tags: ["monitoring", "infrastructure"]
+    parameters:
+      resources: {type: "list[str]"}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

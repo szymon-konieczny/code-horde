@@ -37,6 +37,33 @@ token_limits:
   max_tokens_per_request: 8000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  generate_api_docs:
+    version: "1.0.0"
+    description: "Generate API documentation from code"
+    tags: ["documentation", "api"]
+    parameters:
+      source_path: {type: "string", required: true}
+  create_changelog:
+    version: "1.0.0"
+    description: "Create or update changelog"
+    tags: ["documentation", "changelog"]
+    parameters:
+      version: {type: "string", required: true}
+  maintain_knowledge_base:
+    version: "1.0.0"
+    description: "Manage knowledge base entries"
+    tags: ["documentation", "knowledge-base"]
+    parameters:
+      operation: {type: "string", required: true}
+  generate_activity_report:
+    version: "1.0.0"
+    description: "Generate reports from agent activities"
+    tags: ["reporting", "activity"]
+    parameters:
+      time_period: {type: "string", required: true}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

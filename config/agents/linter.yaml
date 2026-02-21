@@ -38,6 +38,39 @@ token_limits:
   max_tokens_per_request: 4000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  lint_project:
+    version: "1.0.0"
+    description: "Run all applicable linters on the project"
+    tags: ["quality", "linting"]
+    parameters:
+      tools: {type: "list[str]"}
+  lint_file:
+    version: "1.0.0"
+    description: "Run linters on specific files or directories"
+    tags: ["quality", "linting"]
+    parameters:
+      path: {type: "string", required: true}
+  fix_issues:
+    version: "1.0.0"
+    description: "Auto-fix all fixable lint issues"
+    tags: ["quality", "linting", "autofix"]
+    parameters:
+      tools: {type: "list[str]"}
+  setup_linter:
+    version: "1.0.0"
+    description: "Initialize a linter with recommended config"
+    tags: ["quality", "configuration"]
+    parameters:
+      tool: {type: "string", required: true}
+  lint_report:
+    version: "1.0.0"
+    description: "Generate a comprehensive code quality report"
+    tags: ["quality", "reporting"]
+    parameters:
+      format: {type: "string"}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

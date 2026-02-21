@@ -21,6 +21,7 @@ from src.core.reasoning import (
     ReasoningStrategy,
     ThoughtStep,
 )
+from src.core.skills import SkillDefinition, SkillDependency, SkillRegistry
 from src.core.task_manager import TaskManager, TaskResult, TaskStatus
 
 __all__ = [
@@ -52,6 +53,10 @@ __all__ = [
     "ReasoningChain",
     "ReasoningStrategy",
     "ThoughtStep",
+    # Skills
+    "SkillDefinition",
+    "SkillDependency",
+    "SkillRegistry",
     # Task Manager
     "TaskStatus",
     "TaskResult",

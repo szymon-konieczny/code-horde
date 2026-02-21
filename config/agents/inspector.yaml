@@ -248,6 +248,41 @@ archival:
   archive_location: "/app/artifacts/test-results"
   compress_archives: true
 
+# Skills and capabilities
+skills:
+  run_tests:
+    version: "1.0.0"
+    description: "Execute test suites"
+    tags: ["testing", "execution"]
+    parameters:
+      test_path: {type: "string", required: true}
+      framework: {type: "string"}
+  analyze_coverage:
+    version: "1.0.0"
+    description: "Analyze code coverage metrics"
+    tags: ["testing", "coverage", "metrics"]
+    parameters:
+      coverage_path: {type: "string", required: true}
+  regression_test:
+    version: "1.0.0"
+    description: "Perform regression testing"
+    tags: ["testing", "regression"]
+    parameters:
+      test_suite: {type: "string", required: true}
+      baseline: {type: "string"}
+  validate_deployment:
+    version: "1.0.0"
+    description: "Validate deployment readiness"
+    tags: ["testing", "deployment", "validation"]
+    parameters:
+      environment: {type: "string", required: true}
+  quality_report:
+    version: "1.0.0"
+    description: "Generate quality metrics report"
+    tags: ["reporting", "quality", "metrics"]
+    parameters:
+      metrics: {type: "dict"}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

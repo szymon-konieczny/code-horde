@@ -333,6 +333,40 @@ data_export:
       time: "Sunday 3:00 AM"
       destination: "s3://backups/weekly"
 
+# Skills and capabilities
+skills:
+  monitor_health:
+    version: "1.0.0"
+    description: "Monitor system metrics (CPU, memory, disk)"
+    tags: ["monitoring", "health", "metrics"]
+    parameters:
+      targets: {type: "list[str]"}
+  check_uptime:
+    version: "1.0.0"
+    description: "Check service availability and uptime"
+    tags: ["monitoring", "uptime"]
+    parameters:
+      services: {type: "list[str]"}
+  analyze_logs:
+    version: "1.0.0"
+    description: "Analyze logs for anomalies and errors"
+    tags: ["monitoring", "logs", "analysis"]
+    parameters:
+      log_paths: {type: "list[str]"}
+  send_alert:
+    version: "1.0.0"
+    description: "Send alerts for detected issues"
+    tags: ["alerting", "notification"]
+    parameters:
+      alert_type: {type: "string"}
+      message: {type: "string"}
+  health_report:
+    version: "1.0.0"
+    description: "Generate system health status report"
+    tags: ["reporting", "health"]
+    parameters:
+      include_metrics: {type: "list[str]"}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:

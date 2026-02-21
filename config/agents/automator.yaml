@@ -38,6 +38,38 @@ token_limits:
   max_tokens_per_request: 4000
   rate_limit_window: 3600
 
+# Skills and capabilities
+skills:
+  run_shortcut:
+    version: "1.0.0"
+    description: "Discover and run macOS Shortcuts"
+    tags: ["automation", "macos", "shortcuts"]
+    parameters:
+      name: {type: "string", required: true}
+  run_applescript:
+    version: "1.0.0"
+    description: "Execute AppleScript for native macOS app automation"
+    tags: ["automation", "macos", "applescript"]
+    parameters:
+      template: {type: "string"}
+  browser_automate:
+    version: "1.0.0"
+    description: "Playwright-based browser automation (forms, scraping, RPA)"
+    tags: ["automation", "browser", "playwright"]
+    parameters:
+      preset: {type: "string"}
+  run_workflow:
+    version: "1.0.0"
+    description: "Execute a multi-step automation workflow"
+    tags: ["automation", "workflow"]
+    parameters:
+      template: {type: "string"}
+  list_capabilities:
+    version: "1.0.0"
+    description: "Show all available automations, shortcuts, and templates"
+    tags: ["automation", "discovery"]
+    parameters: {}
+
 # Custom instructions — injected into the agent's system prompt
 # Edit these to customize agent behavior without modifying code.
 custom_instructions:
